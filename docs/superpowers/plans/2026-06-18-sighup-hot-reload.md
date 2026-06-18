@@ -4,7 +4,7 @@
 
 **Goal:** Make the headless `opencode serve` process catch `SIGHUP` and, without restarting or interrupting in-flight sessions, reload (1) environment variables from the s6 envdirs and (2) the harness (config, skills, agents, commands, tools).
 
-**Architecture:** The Effect codebase already caches every harness module's state via `InstanceState.make(...)` (per-directory `ScopedCache`) and already exposes `InstanceState.invalidate(state)` — a *non-destructive* cache-bust where the next access re-reads from disk (unlike `InstanceStore.disposeAll()`, which runs the destructive disposers that tear down sessions). We add a per-service `invalidate()` to Config/Agent/Command/Skill/ToolRegistry, an orchestrator that re-reads the envdirs into `process.env` and then invalidates those caches for every currently-loaded instance, and a `SIGHUP` handler in `serve.ts` that runs the orchestrator via `AppRuntime.runPromise`. Because an in-flight turn already snapshotted its config/tools, invalidation only affects the *next* access — active sessions are never interrupted. A `global.reloaded` bus event is emitted so clients can refresh.
+**Architecture:** The Effect codebase already caches every harness module's state via `InstanceState.make(...)` (per-directory `ScopedCache`) and already exposes `InstanceState.invalidate(state)` — a *non-destructive* cache-bust where the next access re-reads from disk (unlike `InstanceStore.disposeAll()`, which runs the destructive disposers that tear down sessions). We add a per-service `invalidate()` to Config/Agent/Command/Skill/ToolRegistry, an orchestrator that re-reads the envdirs into `process.env` and then invalidates those caches for every currently-loaded instance, and a `SIGHUP` handler in `serve.ts` that runs the orchestrator against the listener's own service context via `Listener.reload()` (see Task 6 implementation note — the original `AppRuntime` approach was a no-op against the live server). Because an in-flight turn already snapshotted its config/tools, invalidation only affects the *next* access — active sessions are never interrupted. A `global.reloaded` bus event is emitted so clients can refresh.
 
 **Tech Stack:** TypeScript, Effect (v4 `effect/unstable`), Bun test runner, Node `process` signals, s6 envdir format.
 
@@ -34,9 +34,11 @@
 - Modify `packages/opencode/src/cli/cmd/serve.ts` — install the `SIGHUP` handler.
 - Create tests under `packages/opencode/test/server/` and `packages/opencode/test/skill/`.
 
-### Key Risk / Assumption
+### Key Risk / Assumption — RESOLVED during implementation
 
-`AppRuntime` (`packages/opencode/src/effect/app-runtime.ts`) and the server share layer singletons through the process-wide `memoMap`, so `AppRuntime.runPromise` resolves the **same** `InstanceStore` the running server populates per-request. This is the same mechanism the TUI worker's `SIGUSR2` reload (`cli/tui/worker.ts:56`) and the existing HTTP `dispose` endpoint already rely on. Task 7 manually verifies this end-to-end against a live server.
+Original assumption: `AppRuntime` and the server share `InstanceStore` via the process-wide `memoMap`, so `AppRuntime.runPromise(HarnessReload.run)` would reload the live server.
+
+**This proved FALSE for the headless `serve` path.** `startListener` (`server/server.ts`) builds the listener's services with a **fresh per-listener `memoMap`** (`Layer.makeMemoMapUnsafe()`), isolated from `AppRuntime`'s `memoMap`. Live testing showed the `AppRuntime` reload ran against an empty, unrelated `InstanceStore` (no-op). Fix (see Task 6): build the shared `appLayer` against the **listener's own `memoMap`+scope** and run `HarnessReload.run` against that context via a `Listener.reload()` method. Verified live end-to-end in Task 7 (skill + env changes apply on SIGHUP, no restart, no instance disposal).
 
 ---
 
@@ -674,11 +676,16 @@ git commit -m "feat(server): add SIGHUP harness reload orchestrator + global.rel
 
 ## Task 6: Install the `SIGHUP` handler in `serve`
 
+> **Implementation note (deviation from original plan):** The `AppRuntime.runPromise(HarnessReload.run)` approach was implemented first and verified to be a **no-op** against the live headless server (separate per-listener `memoMap`). The shipped implementation instead:
+> 1. `server/routes/instance/httpapi/server.ts`: export a single shared `appLayer = LayerNode.buildLayer(app)` and use it inside `createRoutes` (same Layer reference is essential for memoMap reuse).
+> 2. `server/server.ts` `startListener`: keep the per-listener `memoMap` in a var; after building the listener, build `appLayer` against that **same** `memoMap`+`scope` to capture the listener's real service singletons (`InstanceStore`, `Skill`, `Config`, …). Expose `Listener.reload = () => Effect.runPromise(HarnessReload.run.pipe(Effect.provide(appContext)))`.
+> 3. `cli/cmd/serve.ts`: `process.on("SIGHUP", () => server.reload())` with an in-flight `reloading` guard. No `AppRuntime` import.
+
 **Files:**
-- Modify: `packages/opencode/src/cli/cmd/serve.ts`
+- Modify: `packages/opencode/src/cli/cmd/serve.ts`, `packages/opencode/src/server/server.ts`, `packages/opencode/src/server/routes/instance/httpapi/server.ts`
 
 **Interfaces:**
-- Consumes: `AppRuntime` (`@/effect/app-runtime`), `HarnessReload.run` (Task 5).
+- Consumes: `Listener.reload` (server.ts), `HarnessReload.run` (Task 5), `HttpApiApp.appLayer`.
 
 - [ ] **Step 1: Add imports**
 

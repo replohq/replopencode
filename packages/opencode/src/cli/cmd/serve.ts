@@ -19,6 +19,23 @@ export const ServeCommand = effectCmd({
     const server = yield* Effect.promise(() => Server.listen(opts))
     console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
 
+    // SIGHUP: reload env vars + harness in place without restarting or
+    // interrupting in-flight sessions. The coordinator rotates the s6 envdirs
+    // on disk, then sends SIGHUP; we re-read them and invalidate harness caches.
+    const { AppRuntime } = yield* Effect.promise(() => import("../../effect/app-runtime"))
+    const { HarnessReload } = yield* Effect.promise(() => import("../../server/harness-reload"))
+    let reloading = false
+    const reload = () => {
+      if (reloading) return
+      reloading = true
+      AppRuntime.runPromise(HarnessReload.run)
+        .catch((err) => console.error("harness reload failed", err))
+        .finally(() => {
+          reloading = false
+        })
+    }
+    yield* Effect.sync(() => process.on("SIGHUP", reload))
+
     yield* Effect.never
   }),
 })

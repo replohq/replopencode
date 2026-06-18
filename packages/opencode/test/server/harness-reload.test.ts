@@ -7,8 +7,10 @@ import { Config } from "../../src/config/config"
 import { Agent } from "../../src/agent/agent"
 import { Command } from "../../src/command"
 import { ToolRegistry } from "../../src/tool/registry"
+import { Env } from "../../src/env"
 import { HarnessReload } from "../../src/server/harness-reload"
 import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
+import { ProviderTest } from "../fake/provider"
 import { provideTmpdirInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -48,6 +50,8 @@ const it = testEffect(
   Layer.mergeAll(
     Skill.defaultLayer,
     Config.defaultLayer,
+    Env.defaultLayer,
+    ProviderTest.fake().layer,
     agentStub,
     commandStub,
     toolRegistryStub,

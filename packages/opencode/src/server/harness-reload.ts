@@ -6,6 +6,8 @@ import { Agent } from "@/agent/agent"
 import { Command } from "@/command"
 import { Skill } from "@/skill"
 import { ToolRegistry } from "@/tool/registry"
+import { Env } from "@/env"
+import { Provider } from "@/provider/provider"
 import { EnvReload } from "./env-reload"
 import { Event } from "./event"
 
@@ -19,34 +21,45 @@ const emitReloaded = Effect.sync(() =>
 /**
  * Reload env + harness in place without disposing instances (sessions survive).
  * 1. Re-read s6 envdirs into process.env.
- * 2. For every currently-loaded instance, invalidate config/agent/command/skill/tool
- *    caches so the next access re-reads from disk (and from the fresh env).
+ * 2. For every currently-loaded instance, invalidate the env/config/provider/
+ *    agent/command/skill/tool caches so the next access re-reads from disk and
+ *    from the fresh env (incl. provider credentials from OPENCODE_CONFIG_CONTENT).
  * 3. Emit global.reloaded so connected clients can refresh.
  *
  * Unlike InstanceStore.disposeAll(), this never runs the instance disposers, so
  * active sessions keep their already-loaded state and pick up changes on their
  * next access.
+ *
+ * MCP is intentionally NOT invalidated here: its cache holds live server
+ * connections, and refreshing them means closing sockets/processes that an
+ * in-flight tool call may be using — which would violate the sessions-survive
+ * guarantee. MCP config changes still require a restart.
  */
 export const run = Effect.gen(function* () {
-  const env = yield* Effect.sync(() => EnvReload.reload())
-  yield* Effect.logInfo("harness reload", { envApplied: env.applied })
+  const reloaded = yield* Effect.sync(() => EnvReload.reload())
+  yield* Effect.logInfo("harness reload", { envApplied: reloaded.applied })
 
   const store = yield* InstanceStore.Service
+  const env = yield* Env.Service
   const config = yield* Config.Service
+  const provider = yield* Provider.Service
   const agent = yield* Agent.Service
   const command = yield* Command.Service
   const skill = yield* Skill.Service
   const tools = yield* ToolRegistry.Service
 
-  // Invalidate dependencies before their dependents: config feeds everything,
-  // and agent/command/tools derive from skill at init time. Sequential order
-  // (no concurrency option) makes this ordering meaningful, so a concurrent
-  // request re-caching a dependent reads already-fresh upstream state.
+  // Invalidate dependencies before their dependents: env (the process.env
+  // snapshot) feeds config; config feeds provider/skill/etc; skill feeds
+  // agent/command/tools. Sequential order (no concurrency option) makes this
+  // ordering meaningful, so a concurrent request re-caching a dependent reads
+  // already-fresh upstream state.
   const invalidateAll = Effect.all(
     [
+      env.invalidate(),
       config.invalidate(),
       config.invalidateInstance(),
       skill.invalidate(),
+      provider.invalidate(),
       agent.invalidate(),
       command.invalidate(),
       tools.invalidate(),

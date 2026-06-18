@@ -40,6 +40,13 @@ describe("EnvReload", () => {
     expect("GONE_RELOAD" in process.env).toBe(false)
   })
 
+  test("converts NULs to newlines then strips trailing newline (s6 order)", () => {
+    const dir = envdir({ NUL_RELOAD: "a\0b\0" })
+    process.env["OPENCODE_RELOAD_ENVDIRS"] = dir
+    EnvReload.reload()
+    expect(process.env["NUL_RELOAD"]).toBe("a\nb")
+  })
+
   test("skips dotfiles and names containing '=', tolerates missing dirs", () => {
     const dir = envdir({ ".hidden": "x\n", "BAD=NAME": "y\n", OK_RELOAD: "z\n" })
     process.env["OPENCODE_RELOAD_ENVDIRS"] = [dir, "/does/not/exist"].join(":")

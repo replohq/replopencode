@@ -38,23 +38,33 @@ export const run = Effect.gen(function* () {
   const skill = yield* Skill.Service
   const tools = yield* ToolRegistry.Service
 
+  // Invalidate dependencies before their dependents: config feeds everything,
+  // and agent/command/tools derive from skill at init time. Sequential order
+  // (no concurrency option) makes this ordering meaningful, so a concurrent
+  // request re-caching a dependent reads already-fresh upstream state.
   const invalidateAll = Effect.all(
     [
       config.invalidate(),
       config.invalidateInstance(),
+      skill.invalidate(),
       agent.invalidate(),
       command.invalidate(),
-      skill.invalidate(),
       tools.invalidate(),
     ],
     { discard: true },
   )
 
   const dirs = yield* store.directories()
-  yield* Effect.forEach(dirs, (dir) => store.provide({ directory: dir }, invalidateAll), {
-    concurrency: "unbounded",
-    discard: true,
-  })
+  yield* Effect.forEach(
+    dirs,
+    // Isolate each instance: a single failing/mid-disposal instance must not
+    // abort the batch or suppress the reloaded event below.
+    (dir) =>
+      store
+        .provide({ directory: dir }, invalidateAll)
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("instance harness reload failed", { dir, cause }))),
+    { concurrency: "unbounded", discard: true },
+  )
 
   yield* emitReloaded
 }).pipe(Effect.withSpan("Server.harnessReload"), Effect.uninterruptible)

@@ -14,6 +14,11 @@ export function dirs(): string[] {
  * stripped, NULs -> newlines). An empty file unsets the variable. Later dirs in
  * the list override earlier ones, matching the s6-envdir order in the service
  * `run` script.
+ *
+ * Note: this only affects consumers that read process.env lazily (e.g. the
+ * config flags / OPENCODE_CONFIG_CONTENT, which drives providers/MCP/skills).
+ * Values captured into module-load constants at process start (e.g.
+ * OPENCODE_SERVER_PASSWORD) are NOT refreshed and still require a restart.
  */
 export function reload(): { applied: number } {
   let applied = 0
@@ -39,7 +44,9 @@ export function reload(): { applied: number } {
         applied++
         continue
       }
-      process.env[name] = contents.replace(/\n+$/, "").replace(/\0/g, "\n")
+      // s6-envdir order: NULs become newlines first, then trailing newlines are
+      // stripped (so a value ending in NUL doesn't keep a trailing newline).
+      process.env[name] = contents.replace(/\0/g, "\n").replace(/\n+$/, "")
       applied++
     }
   }

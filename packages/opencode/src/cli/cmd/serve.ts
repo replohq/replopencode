@@ -22,13 +22,14 @@ export const ServeCommand = effectCmd({
     // SIGHUP: reload env vars + harness in place without restarting or
     // interrupting in-flight sessions. The coordinator rotates the s6 envdirs
     // on disk, then sends SIGHUP; we re-read them and invalidate harness caches.
-    const { AppRuntime } = yield* Effect.promise(() => import("../../effect/app-runtime"))
-    const { HarnessReload } = yield* Effect.promise(() => import("../../server/harness-reload"))
+    // server.reload() runs against the listener's own service context, so it
+    // invalidates the exact InstanceStore/Skill/Config caches requests serve from.
     let reloading = false
     const reload = () => {
       if (reloading) return
       reloading = true
-      AppRuntime.runPromise(HarnessReload.run)
+      server
+        .reload()
         .catch((err) => console.error("harness reload failed", err))
         .finally(() => {
           reloading = false

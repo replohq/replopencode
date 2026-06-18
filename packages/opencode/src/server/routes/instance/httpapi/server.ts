@@ -258,6 +258,11 @@ const app = LayerNode.group([
   PtyTicket.node,
 ])
 
+// Single shared build of the full app layer. Reused by createRoutes AND by the
+// per-listener harness reload (server.ts) so that, within one listener's
+// memoMap, both resolve the SAME service singletons (notably InstanceStore).
+export const appLayer = LayerNode.buildLayer(app)
+
 export function createRoutes(
   corsOptions?: CorsOptions,
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
@@ -279,7 +284,7 @@ export function createRoutes(
       MoveSession.defaultLayer,
       HttpServer.layerServices,
     ]),
-    Layer.provide(LayerNode.buildLayer(app)),
+    Layer.provide(appLayer),
     Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
     Layer.provide(Observability.layer),
   )

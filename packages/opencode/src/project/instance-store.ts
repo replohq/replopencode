@@ -23,6 +23,7 @@ export interface Interface {
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeDirectory: (directory: string) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
+  readonly directories: () => Effect.Effect<string[]>
   readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
@@ -189,6 +190,10 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
       load(input).pipe(Effect.flatMap((ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))))
 
+    const directories = Effect.fn("InstanceStore.directories")(function* () {
+      return [...cache.keys()]
+    })
+
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
     return Service.of({
@@ -197,6 +202,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       dispose,
       disposeDirectory,
       disposeAll,
+      directories,
       provide,
     })
   }),

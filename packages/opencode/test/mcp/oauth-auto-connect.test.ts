@@ -130,6 +130,7 @@ const { MCP } = await import("../../src/mcp/index")
 const { EventV2Bridge } = await import("../../src/event-v2-bridge")
 const { Config } = await import("../../src/config/config")
 const { McpAuth } = await import("../../src/mcp/auth")
+const { McpCache } = await import("../../src/mcp/cache")
 const { McpOAuthProvider } = await import("../../src/mcp/oauth-provider")
 const { FSUtil } = await import("@opencode-ai/core/fs-util")
 const { CrossSpawnSpawner } = await import("@opencode-ai/core/cross-spawn-spawner")
@@ -138,6 +139,7 @@ const mcpTest = testEffect(
   Layer.mergeAll(
     MCP.layer.pipe(
       Layer.provide(McpAuth.defaultLayer),
+      Layer.provide(McpCache.defaultLayer),
       Layer.provideMerge(EventV2Bridge.defaultLayer),
       Layer.provide(Config.defaultLayer),
       Layer.provide(CrossSpawnSpawner.defaultLayer),

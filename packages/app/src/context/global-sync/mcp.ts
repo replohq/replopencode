@@ -13,6 +13,8 @@ export async function toggleMcp(input: {
     disabled: input.connect,
     failed: input.connect,
     needs_client_registration: input.connect,
+    // Deferred (lazy) servers connect on toggle, loading their tools eagerly.
+    deferred: input.connect,
   }[input.status]()
   await input.refresh()
 }

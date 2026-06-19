@@ -66,6 +66,7 @@ export function DialogStatus() {
                         disabled: theme.textMuted,
                         needs_auth: theme.warning,
                         needs_client_registration: theme.error,
+                        deferred: theme.textMuted,
                       } as Record<string, typeof theme.success>
                     )[item.status],
                   }}
@@ -85,6 +86,7 @@ export function DialogStatus() {
                       <Match when={(item.status as string) === "needs_client_registration" && item}>
                         {(val) => (val() as { error: string }).error}
                       </Match>
+                      <Match when={item.status === "deferred"}>Deferred (lazy)</Match>
                     </Switch>
                   </span>
                 </text>

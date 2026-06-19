@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
@@ -199,6 +200,96 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         }),
       )
     tools[key] = item
+  }
+
+  // Lazy-loaded MCP servers: their tools are not injected upfront. Expose a
+  // single discovery tool so the model can load a server's tools on demand.
+  // Loaded tools become available on the next step (tools are re-resolved each
+  // step in the prompt loop).
+  const deferred = yield* mcp.deferred()
+  const deferredServers = Object.keys(deferred)
+  if (deferredServers.length > 0) {
+    const toolId = (server: string, name: string) => McpCatalog.sanitize(server) + "_" + McpCatalog.sanitize(name)
+    const serverLines = deferredServers.map((server) => {
+      const names = deferred[server].tools.map((t) => toolId(server, t.name))
+      return `- ${server}: ${names.length ? names.join(", ") : "(tools not yet indexed — load to discover)"}`
+    })
+    const description = [
+      "Load tools from MCP servers that are configured but deferred (their tools are not loaded upfront, to keep startup fast and the context small).",
+      "",
+      "Deferred servers and the tools they provide:",
+      ...serverLines,
+      "",
+      "Pass `server` to connect that server and load its tools — they become callable on your next step. Call with no arguments to see full descriptions for every deferred tool.",
+    ].join("\n")
+
+    tools["mcp"] = tool({
+      description,
+      inputSchema: jsonSchema<{ server?: string }>({
+        type: "object",
+        properties: {
+          server: {
+            type: "string",
+            description: "Name of the deferred MCP server to connect and load. Omit to list all deferred tools.",
+          },
+        },
+        additionalProperties: false,
+      }),
+      execute(args) {
+        return run.promise(
+          Effect.gen(function* () {
+            const server = (args as { server?: string }).server
+            const current = yield* mcp.deferred()
+
+            if (!server) {
+              const sections = Object.entries(current).map(([name, info]) => {
+                const lines = info.tools.length
+                  ? info.tools.map((t) => `  - ${toolId(name, t.name)}: ${t.description ?? ""}`.trimEnd()).join("\n")
+                  : "  (tools not yet indexed — load this server to discover them)"
+                return `${name}:\n${lines}`
+              })
+              return {
+                title: "mcp",
+                metadata: { servers: Object.keys(current) },
+                output: sections.length ? sections.join("\n\n") : "No deferred MCP servers.",
+              }
+            }
+
+            if (!(server in current)) {
+              return {
+                title: "mcp",
+                metadata: { server },
+                output: `No deferred MCP server named "${server}". It may already be loaded, disabled, or misspelled. Deferred servers: ${
+                  Object.keys(current).join(", ") || "(none)"
+                }.`,
+              }
+            }
+
+            const status = yield* mcp.activate(server).pipe(Effect.orElseSucceed(() => undefined))
+            if (!status || status.status !== "connected") {
+              const reason = status?.status === "failed" ? `: ${status.error}` : status ? ` (${status.status})` : ""
+              return {
+                title: "mcp",
+                metadata: { server, status: status?.status ?? "error" },
+                output: `Failed to load MCP server "${server}"${reason}.`,
+              }
+            }
+
+            const loaded = Object.keys(yield* mcp.tools()).filter((key) =>
+              key.startsWith(McpCatalog.sanitize(server) + "_"),
+            )
+            return {
+              title: "mcp",
+              metadata: { server, loaded },
+              output: [
+                `Loaded MCP server "${server}". The following tools are now available on your next step:`,
+                ...loaded.map((key) => `- ${key}`),
+              ].join("\n"),
+            }
+          }),
+        )
+      },
+    })
   }
 
   return tools

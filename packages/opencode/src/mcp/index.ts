@@ -35,6 +35,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
+import { McpCache } from "./cache"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -108,6 +109,9 @@ const StatusNeedsClientRegistration = Schema.Struct({
   status: Schema.Literal("needs_client_registration"),
   error: Schema.String,
 }).annotate({ identifier: "MCPStatusNeedsClientRegistration" })
+const StatusDeferred = Schema.Struct({ status: Schema.Literal("deferred") }).annotate({
+  identifier: "MCPStatusDeferred",
+})
 
 export const Status = Schema.Union([
   StatusConnected,
@@ -115,6 +119,7 @@ export const Status = Schema.Union([
   StatusFailed,
   StatusNeedsAuth,
   StatusNeedsClientRegistration,
+  StatusDeferred,
 ]).annotate({ identifier: "MCPStatus", discriminator: "status" })
 export type Status = Schema.Schema.Type<typeof Status>
 
@@ -154,12 +159,27 @@ interface State {
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
+  // Lazy servers that have not been connected yet. The value is the cached
+  // tool catalog (possibly empty if the server has never been connected) used
+  // to advertise available tools without spawning/contacting the server.
+  lazy: Record<string, MCPToolDef[]>
+}
+
+function isLazy(mcp: ConfigMCPV1.Info, cfg: ConfigV1.Info): boolean {
+  return mcp.lazy ?? cfg.experimental?.mcp_lazy ?? false
+}
+
+// A deferred server and a summary of the tools it can load on demand.
+export interface DeferredServer {
+  tools: { name: string; description?: string }[]
 }
 
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly tools: () => Effect.Effect<Record<string, Tool>>
+  readonly deferred: () => Effect.Effect<Record<string, DeferredServer>>
+  readonly activate: (name: string) => Effect.Effect<Status, NotFoundError>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
@@ -195,6 +215,7 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
+    const cache = yield* McpCache.Service
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -379,6 +400,9 @@ export const layer = Layer.effect(
           if (!listed) {
             return yield* Effect.fail(new Error("Failed to get tools"))
           }
+          // Refresh the persisted catalog so lazy servers can advertise these
+          // tools on a future startup without reconnecting.
+          yield* cache.set(key, McpCache.signature(mcp), listed)
           return { mcpClient, status, defs: listed } satisfies CreateResult
         }).pipe(
           Effect.catchCause((cause) =>
@@ -480,6 +504,7 @@ export const layer = Layer.effect(
           status: {},
           clients: {},
           defs: {},
+          lazy: {},
         }
 
         yield* Effect.forEach(
@@ -493,6 +518,15 @@ export const layer = Layer.effect(
 
               if (mcp.enabled === false) {
                 s.status[key] = { status: "disabled" }
+                return
+              }
+
+              // Lazy servers are not connected at startup. Advertise their tools
+              // from the persisted catalog (if any); the server is only spawned
+              // when the model loads it via the "mcp" tool.
+              if (isLazy(mcp, cfg)) {
+                s.status[key] = { status: "deferred" }
+                s.lazy[key] = (yield* cache.get(key, McpCache.signature(mcp))) ?? []
                 return
               }
 
@@ -512,6 +546,7 @@ export const layer = Layer.effect(
             const clients = Object.values(s.clients)
             s.clients = {}
             s.defs = {}
+            s.lazy = {}
             yield* Effect.forEach(
               clients,
               (client) =>
@@ -557,6 +592,7 @@ export const layer = Layer.effect(
       s.status[name] = { status: "connected" }
       s.clients[name] = client
       s.defs[name] = listed
+      delete s.lazy[name]
       watch(s, name, client, bridge, timeout)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
@@ -648,6 +684,27 @@ export const layer = Layer.effect(
         }
       }
       return result
+    })
+
+    // Servers deferred via lazy loading, with the tools they can load on demand
+    // (sourced from the persisted catalog). Only servers still in the deferred
+    // state are reported — once activated (or failed) they drop out.
+    const deferred = Effect.fn("MCP.deferred")(function* () {
+      const s = yield* InstanceState.get(state)
+      const result: Record<string, DeferredServer> = {}
+      for (const [name, defs] of Object.entries(s.lazy)) {
+        if (s.status[name]?.status !== "deferred") continue
+        result[name] = { tools: defs.map((t) => ({ name: t.name, description: t.description })) }
+      }
+      return result
+    })
+
+    // Connect a deferred (lazy) server on demand so its tools become available.
+    const activate = Effect.fn("MCP.activate")(function* (name: string) {
+      const mcp = yield* requireMcpConfig(name)
+      const s = yield* InstanceState.get(state)
+      if (s.clients[name] && s.status[name]?.status === "connected") return s.status[name]
+      return yield* createAndStore(name, { ...mcp, enabled: true })
     })
 
     function collectFromConnected<T extends { name: string }>(
@@ -918,6 +975,8 @@ export const layer = Layer.effect(
       status,
       clients,
       tools,
+      deferred,
+      activate,
       prompts,
       resources,
       add,
@@ -942,12 +1001,19 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 
 export const defaultLayer = layer.pipe(
   Layer.provide(McpAuth.defaultLayer),
+  Layer.provide(McpCache.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(CrossSpawnSpawner.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node])
+export const node = LayerNode.make(layer, [
+  CrossSpawnSpawner.node,
+  McpAuth.node,
+  McpCache.node,
+  EventV2Bridge.node,
+  Config.node,
+])
 
 export * as MCP from "."

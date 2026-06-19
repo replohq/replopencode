@@ -20229,6 +20229,9 @@
           "enabled": {
             "type": "boolean"
           },
+          "lazy": {
+            "type": "boolean"
+          },
           "timeout": {
             "type": "integer",
             "exclusiveMinimum": 0
@@ -20292,6 +20295,9 @@
               }
             ],
             "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection."
+          },
+          "lazy": {
+            "type": "boolean"
           },
           "timeout": {
             "type": "integer",
@@ -20769,6 +20775,9 @@
               "mcp_timeout": {
                 "type": "integer",
                 "exclusiveMinimum": 0
+              },
+              "mcp_lazy": {
+                "type": "boolean"
               },
               "policies": {
                 "type": "array",
@@ -21887,6 +21896,17 @@
         "required": ["status", "error"],
         "additionalProperties": false
       },
+      "MCPStatusDeferred": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["deferred"]
+          }
+        },
+        "required": ["status"],
+        "additionalProperties": false
+      },
       "MCPStatus": {
         "anyOf": [
           {
@@ -21903,6 +21923,9 @@
           },
           {
             "$ref": "#/components/schemas/MCPStatusNeedsClientRegistration"
+          },
+          {
+            "$ref": "#/components/schemas/MCPStatusDeferred"
           }
         ]
       },

@@ -153,6 +153,9 @@ export const McpListCommand = effectCmd({
         statusIcon = "✗"
         statusText = "needs client registration"
         hint = "\n    " + status.error
+      } else if (status.status === "deferred") {
+        statusIcon = "○"
+        statusText = "deferred (lazy)"
       } else {
         statusIcon = "✗"
         statusText = "failed"

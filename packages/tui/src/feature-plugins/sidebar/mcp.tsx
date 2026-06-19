@@ -66,6 +66,7 @@ function View(props: { api: TuiPluginApi }) {
                       <Match when={item.status === "disabled"}>Disabled</Match>
                       <Match when={item.status === "needs_auth"}>Needs auth</Match>
                       <Match when={item.status === "needs_client_registration"}>Needs client ID</Match>
+                      <Match when={item.status === "deferred"}>Deferred (lazy)</Match>
                     </Switch>
                   </span>
                 </text>

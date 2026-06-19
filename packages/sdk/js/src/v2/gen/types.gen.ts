@@ -1855,6 +1855,7 @@ export type McpLocalConfig = {
     [key: string]: string
   }
   enabled?: boolean
+  lazy?: boolean
   timeout?: number
 }
 
@@ -1883,6 +1884,7 @@ export type McpRemoteConfig = {
    * OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection.
    */
   oauth?: McpOAuthConfig | false
+  lazy?: boolean
   timeout?: number
 }
 
@@ -2043,6 +2045,7 @@ export type Config = {
     primary_tools?: Array<string>
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
+    mcp_lazy?: boolean
     policies?: Array<ConfigV2ExperimentalPolicy>
   }
 }
@@ -2422,12 +2425,17 @@ export type McpStatusNeedsClientRegistration = {
   error: string
 }
 
+export type McpStatusDeferred = {
+  status: "deferred"
+}
+
 export type McpStatus =
   | McpStatusConnected
   | McpStatusDisabled
   | McpStatusFailed
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
+  | McpStatusDeferred
 
 export type McpUnsupportedOAuthError = {
   error: string

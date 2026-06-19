@@ -753,6 +753,94 @@ it.instance(
 )
 
 // ========================================================================
+// Test: lazy loading (deferred MCP servers)
+// ========================================================================
+
+it.instance(
+  "lazy server is deferred at startup and connects on activate",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "lazy-server"
+        const serverState = getOrCreateClientState("lazy-server")
+        serverState.tools = [
+          { name: "lazy_tool", description: "a lazy tool", inputSchema: { type: "object", properties: {} } },
+        ]
+        const countBefore = clientCreateCount
+
+        // Deferred at startup: no client created, no tools exposed.
+        const status = yield* mcp.status()
+        expect(status["lazy-server"]?.status).toBe("deferred")
+        expect(clientCreateCount).toBe(countBefore)
+        expect(Object.keys(yield* mcp.tools())).toHaveLength(0)
+        expect(serverState.listToolsCalls).toBe(0)
+
+        // The discovery surface lists it.
+        expect(Object.keys(yield* mcp.deferred())).toEqual(["lazy-server"])
+
+        // Activating connects it and exposes its tools.
+        const activated = yield* mcp.activate("lazy-server")
+        expect(activated.status).toBe("connected")
+        expect(serverState.listToolsCalls).toBe(1)
+        expect(Object.keys(yield* mcp.tools())).toEqual(["lazy-server_lazy_tool"])
+
+        // No longer deferred once connected.
+        expect(Object.keys(yield* mcp.deferred())).toHaveLength(0)
+      }),
+    ),
+  {
+    config: {
+      mcp: {
+        "lazy-server": {
+          type: "local",
+          command: ["echo", "test"],
+          lazy: true,
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "experimental.mcp_lazy defers servers and per-server lazy:false overrides it",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        getOrCreateClientState("eager-server")
+        getOrCreateClientState("defer-server")
+        // The state initializer connects eager-server (lazy:false override);
+        // bind the freshly created client to its state.
+        lastCreatedClientName = "eager-server"
+
+        const status = yield* mcp.status()
+        expect(status["defer-server"]?.status).toBe("deferred")
+        expect(status["eager-server"]?.status).toBe("connected")
+
+        expect(Object.keys(yield* mcp.deferred())).toEqual(["defer-server"])
+        const tools = yield* mcp.tools()
+        expect(Object.keys(tools).some((k) => k.startsWith("eager-server_"))).toBe(true)
+        expect(Object.keys(tools).some((k) => k.startsWith("defer-server_"))).toBe(false)
+      }),
+    ),
+  {
+    config: {
+      experimental: { mcp_lazy: true },
+      mcp: {
+        "defer-server": {
+          type: "local",
+          command: ["echo", "defer"],
+        },
+        "eager-server": {
+          type: "local",
+          command: ["echo", "eager"],
+          lazy: false,
+        },
+      },
+    },
+  },
+)
+
+// ========================================================================
 // Test: prompts() and resources()
 // ========================================================================
 

@@ -17,6 +17,10 @@ export const Local = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),
+  lazy: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Defer connecting to this server until one of its tools is needed. Its tools are not loaded upfront; the model discovers and loads them on demand via the 'mcp' tool. Speeds up startup and saves context. Defaults to the experimental.mcp_lazy global setting.",
+  }),
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
   }),
@@ -52,6 +56,10 @@ export const Remote = Schema.Struct({
   }),
   oauth: Schema.optional(Schema.Union([OAuth, Schema.Literal(false)])).annotate({
     description: "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection.",
+  }),
+  lazy: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Defer connecting to this server until one of its tools is needed. Its tools are not loaded upfront; the model discovers and loads them on demand via the 'mcp' tool. Speeds up startup and saves context. Defaults to the experimental.mcp_lazy global setting.",
   }),
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",

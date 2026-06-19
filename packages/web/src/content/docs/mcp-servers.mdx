@@ -123,6 +123,7 @@ Here are all the options for configuring a local MCP server.
 | `cwd`         | String  |          | Working directory for the MCP server process. Relative paths resolve from the workspace. |
 | `environment` | Object  |          | Environment variables to set when running the server.                                    |
 | `enabled`     | Boolean |          | Enable or disable the MCP server on startup.                                             |
+| `lazy`        | Boolean |          | Defer connecting until a tool is needed. See [Lazy loading](#lazy-loading) below.        |
 | `timeout`     | Number  |          | Timeout in ms for fetching tools from the MCP server. Defaults to 5000 (5 seconds).      |
 
 ---
@@ -158,9 +159,54 @@ The `url` is the URL of the remote MCP server and with the `headers` option you 
 | `type`    | String  | Y        | Type of MCP server connection, must be `"remote"`.                                  |
 | `url`     | String  | Y        | URL of the remote MCP server.                                                       |
 | `enabled` | Boolean |          | Enable or disable the MCP server on startup.                                        |
+| `lazy`    | Boolean |          | Defer connecting until a tool is needed. See [Lazy loading](#lazy-loading) below.   |
 | `headers` | Object  |          | Headers to send with the request.                                                   |
 | `oauth`   | Object  |          | OAuth authentication configuration. See [OAuth](#oauth) section below.              |
 | `timeout` | Number  |          | Timeout in ms for fetching tools from the MCP server. Defaults to 5000 (5 seconds). |
+
+---
+
+## Lazy loading
+
+By default opencode connects to every configured MCP server on startup and loads all
+of their tools into the model's context. With many servers — or servers that are slow
+to start — this delays your first response and consumes a large chunk of the context
+window.
+
+Set `lazy` to `true` to defer a server. A lazy server is **not** connected at startup
+and its tools are **not** loaded upfront. Instead, opencode exposes a single `mcp` tool
+that the model uses to discover and load a server's tools on demand. When the model
+loads a server, opencode connects to it and its tools become available on the next step.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "github": {
+      "type": "local",
+      "command": ["github-mcp-server"],
+      "lazy": true
+    }
+  }
+}
+```
+
+To defer every server by default, set `experimental.mcp_lazy` to `true`. Individual
+servers can still opt back in by setting `lazy: false`.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "mcp_lazy": true
+  }
+}
+```
+
+To keep discovery fast, opencode caches each server's tool catalog to disk after the
+first successful connection, so a lazy server can advertise its tools on later startups
+without connecting. The cache is keyed by the server's connection settings and refreshed
+automatically whenever they change.
 
 ---
 

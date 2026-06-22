@@ -79,6 +79,7 @@ export interface Interface {
     agent: Agent.Info
     permission?: PermissionV1.Ruleset
   }) => Effect.Effect<Tool.Def[]>
+  readonly invalidate: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
@@ -339,7 +340,11 @@ const layer = Layer.effect(
       return { task: s.task, read: s.read }
     })
 
-    return Service.of({ ids, all, named, tools })
+    const invalidate: Interface["invalidate"] = Effect.fn("ToolRegistry.invalidate")(function* () {
+      yield* InstanceState.invalidate(state)
+    })
+
+    return Service.of({ ids, all, named, tools, invalidate })
   }),
 )
 

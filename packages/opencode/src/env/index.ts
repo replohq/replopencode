@@ -10,6 +10,7 @@ export interface Interface {
   readonly all: () => Effect.Effect<State>
   readonly set: (key: string, value: string) => Effect.Effect<void>
   readonly remove: (key: string) => Effect.Effect<void>
+  readonly invalidate: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Env") {}
@@ -31,8 +32,11 @@ const layer = Layer.effect(
       const env = yield* InstanceState.get(state)
       delete env[key]
     })
+    const invalidate = Effect.fn("Env.invalidate")(function* () {
+      yield* InstanceState.invalidate(state)
+    })
 
-    return Service.of({ get, all, set, remove })
+    return Service.of({ get, all, set, remove, invalidate })
   }),
 )
 

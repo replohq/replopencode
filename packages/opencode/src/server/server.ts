@@ -8,6 +8,7 @@ import { OpenApi } from "effect/unstable/httpapi"
 import { createServer } from "node:http"
 import { MDNS } from "./mdns"
 import { HttpApiApp } from "./routes/instance/httpapi/server"
+import { HarnessReload } from "./harness-reload"
 import { disposeMiddleware } from "./routes/instance/httpapi/lifecycle"
 import { WebSocketTracker } from "./routes/instance/httpapi/websocket-tracker"
 import { PublicApi } from "./routes/instance/httpapi/public"
@@ -22,6 +23,9 @@ export type Listener = {
   port: number
   url: URL
   stop: (close?: boolean) => Promise<void>
+  // Reload env + harness in place (SIGHUP) without restarting or disposing
+  // instances. Runs against this listener's own service context.
+  reload: () => Promise<void>
 }
 
 type ServerApp = {
@@ -40,6 +44,7 @@ type ListenerState = {
   server: Context.Service.Shape<typeof HttpServer.HttpServer>
   http: ListenerServer
   websockets: WebSocketTracker.Interface
+  reload: () => Promise<void>
 }
 type EffectListener = Omit<Listener, "stop"> & {
   stop: (close?: boolean) => Effect.Effect<void>
@@ -77,6 +82,7 @@ export async function listen(opts: ListenOptions): Promise<Listener> {
     port: listener.port,
     url: listener.url,
     stop: (close?: boolean) => Effect.runPromiseExit(listener.stop(close)).then(() => undefined),
+    reload: listener.reload,
   }
 }
 
@@ -93,6 +99,7 @@ const listenEffect: (opts: ListenOptions) => Effect.Effect<EffectListener, unkno
       port: address.port,
       url: listenerUrl,
       stop: yield* makeStop(state, unpublishMdns, listenerUrl),
+      reload: state.reload,
     }
   },
 )
@@ -123,17 +130,28 @@ function startWithPortFallback(opts: ListenOptions) {
 
 function startListener(opts: ListenOptions, port: number) {
   const scope = Scope.makeUnsafe()
-  return Layer.buildWithMemoMap(listenerLayer(opts, port), Layer.makeMemoMapUnsafe(), scope).pipe(
+  const memoMap = Layer.makeMemoMapUnsafe()
+  return Layer.buildWithMemoMap(listenerLayer(opts, port), memoMap, scope).pipe(
     Effect.provide(HttpApiApp.context),
-    Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
-    Effect.map(
-      (ctx): ListenerState => ({
-        scope,
-        server: Context.get(ctx, HttpServer.HttpServer),
-        http: Context.get(ctx, ListenerServerService),
-        websockets: Context.get(ctx, WebSocketTracker.Service),
-      }),
+    Effect.flatMap((ctx) =>
+      // Build the full app layer against THIS listener's memoMap + scope. Because
+      // createRoutes built the same `appLayer` reference into this memoMap, the
+      // services here (InstanceStore, Skill, Config, ...) are the exact same
+      // singletons the request handlers use — so a SIGHUP reload invalidates the
+      // caches the live server actually serves from.
+      Layer.buildWithMemoMap(HttpApiApp.appLayer, memoMap, scope).pipe(
+        Effect.map(
+          (appContext): ListenerState => ({
+            scope,
+            server: Context.get(ctx, HttpServer.HttpServer),
+            http: Context.get(ctx, ListenerServerService),
+            websockets: Context.get(ctx, WebSocketTracker.Service),
+            reload: () => Effect.runPromise(HarnessReload.run.pipe(Effect.provide(appContext))),
+          }),
+        ),
+      ),
     ),
+    Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
   )
 }
 

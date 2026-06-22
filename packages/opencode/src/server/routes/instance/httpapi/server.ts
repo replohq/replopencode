@@ -268,6 +268,11 @@ const app = LayerNode.group([
   PtyTicket.node,
 ])
 
+// Single shared build of the full app layer. Reused by createRoutes AND by the
+// per-listener harness reload (server.ts) so that, within one listener's
+// memoMap, both resolve the SAME service singletons (notably InstanceStore).
+export const appLayer = AppNodeBuilderV1.build(app)
+
 export function createRoutes(
   corsOptions?: CorsOptions,
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
@@ -303,7 +308,7 @@ export function createRoutes(
     ),
     Layer.provide(locationServiceMapV2),
 
-    Layer.provide(AppNodeBuilderV1.build(app)),
+    Layer.provide(appLayer),
     // Must stay last: layers provided later in this pipe build beneath earlier ones,
     // so Observability must come after every service graph. Otherwise eagerly forked
     // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout

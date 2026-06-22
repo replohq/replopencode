@@ -134,6 +134,18 @@ const targets = singleFlag
     })
   : allTargets
 
+// Replopencode: optionally restrict the build to specific targets by full name
+// (e.g. OPENCODE_TARGETS="opencode-linux-x64,opencode-darwin-arm64"). Lets the
+// fork build only the platforms it needs instead of cross-compiling all 12.
+const targetFilter = process.env["OPENCODE_TARGETS"]
+  ? new Set(
+      process.env["OPENCODE_TARGETS"]
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+  : undefined
+
 await $`rm -rf dist`
 
 const binaries: Record<string, string> = {}
@@ -153,6 +165,7 @@ for (const item of targets) {
   ]
     .filter(Boolean)
     .join("-")
+  if (targetFilter && !targetFilter.has(name)) continue
   console.log(`building ${name}`)
   await $`mkdir -p dist/${name}/bin`
 

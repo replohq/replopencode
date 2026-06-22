@@ -4,6 +4,7 @@ import { Schema } from "effect"
 export const Event = {
   Connected: EventV2.define({ type: "server.connected", schema: {} }),
   Disposed: EventV2.define({ type: "global.disposed", schema: {} }),
+  Reloaded: EventV2.define({ type: "global.reloaded", schema: {} }),
 }
 
 export const InstanceDisposed = Schema.Struct({

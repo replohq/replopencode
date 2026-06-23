@@ -204,6 +204,7 @@ function fake(
       return msg
     },
     firstTokenAt: undefined,
+    requestStartAt: undefined,
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
     process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),

@@ -1137,10 +1137,13 @@ export const layer = Layer.effect(
         let structured: unknown
         let step = 0
         // Turn timing (debug). turnStart = when this turn began processing;
-        // firstTokenAt = first model output token across all steps (TTFT). One
-        // turn.done line is emitted at the end; per-step lines would be noisy.
+        // firstTokenAt = first model output token across all steps (TTFT);
+        // firstTokenReqStart = the dispatch time of the step that produced it,
+        // so provider TTFT can be isolated from pre-call setup. One turn.done
+        // line is emitted at the end; per-step lines would be noisy.
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
+        let firstTokenReqStart: number | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1351,7 +1354,10 @@ export const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
-            if (firstTokenAt === undefined) firstTokenAt = handle.firstTokenAt
+            if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
+              firstTokenAt = handle.firstTokenAt
+              firstTokenReqStart = handle.requestStartAt
+            }
 
             if (structured !== undefined) {
               handle.message.structured = structured
@@ -1406,6 +1412,10 @@ export const layer = Layer.effect(
         yield* Effect.logDebug("turn.done", {
           "session.id": sessionID,
           ttft_ms: firstTokenAt !== undefined ? firstTokenAt - turnStart : undefined,
+          provider_ttft_ms:
+            firstTokenAt !== undefined && firstTokenReqStart !== undefined
+              ? firstTokenAt - firstTokenReqStart
+              : undefined,
           turn_ms: Date.now() - turnStart,
           steps: step,
         })

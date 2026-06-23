@@ -37,6 +37,9 @@ export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
+  // Wall-clock (ms) when the first model output of this step arrived (first
+  // reasoning or text token), or undefined if the step produced neither.
+  readonly firstTokenAt: number | undefined
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -81,6 +84,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   currentTextID: string | undefined
+  firstTokenAt: number | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   v2AssistantMessageID: SessionMessage.ID | undefined
 }
@@ -123,6 +127,7 @@ export const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         currentTextID: undefined,
+        firstTokenAt: undefined,
         reasoningMap: {},
         v2AssistantMessageID: undefined,
       }
@@ -372,6 +377,7 @@ export const layer = Layer.effect(
         switch (value.type) {
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
+            if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (mirrorAssistant) {
               yield* events.publish(SessionEvent.Reasoning.Started, {
@@ -757,6 +763,7 @@ export const layer = Layer.effect(
           }
 
           case "text-start":
+            if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               if (mirrorAssistant) {
@@ -1036,6 +1043,9 @@ export const layer = Layer.effect(
       return {
         get message() {
           return ctx.assistantMessage
+        },
+        get firstTokenAt() {
+          return ctx.firstTokenAt
         },
         updateToolCall,
         completeToolCall,

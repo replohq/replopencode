@@ -1136,6 +1136,11 @@ export const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        // Turn timing (debug). turnStart = when this turn began processing;
+        // firstTokenAt = first model output token across all steps (TTFT). One
+        // turn.done line is emitted at the end; per-step lines would be noisy.
+        const turnStart = Date.now()
+        let firstTokenAt: number | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1346,6 +1351,8 @@ export const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
+            if (firstTokenAt === undefined) firstTokenAt = handle.firstTokenAt
+
             if (structured !== undefined) {
               handle.message.structured = structured
               handle.message.finish = handle.message.finish ?? "stop"
@@ -1395,6 +1402,13 @@ export const layer = Layer.effect(
           if (outcome === "break") break
           continue
         }
+
+        yield* Effect.logDebug("turn.done", {
+          "session.id": sessionID,
+          turn_ms: Date.now() - turnStart,
+          ttft_ms: firstTokenAt !== undefined ? firstTokenAt - turnStart : undefined,
+          steps: step,
+        })
 
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)

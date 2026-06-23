@@ -37,11 +37,7 @@ export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
-  // Wall-clock (ms) when the first model output of this step arrived (first
-  // reasoning or text token), or undefined if the step produced neither.
   readonly firstTokenAt: number | undefined
-  // Wall-clock (ms) when this step's model request was dispatched. Pairs with
-  // firstTokenAt to isolate provider TTFT from opencode's pre-call setup.
   readonly requestStartAt: number | undefined
   readonly updateToolCall: (
     toolCallID: string,
@@ -983,8 +979,6 @@ export const layer = Layer.effect(
             ctx.currentTextID = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            // Stamp model-request dispatch so provider TTFT (first token minus
-            // this) can be separated from opencode's pre-call setup overhead.
             ctx.requestStartAt = Date.now()
             const stream = llm.stream(streamInput)
 

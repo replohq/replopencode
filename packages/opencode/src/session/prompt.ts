@@ -1136,11 +1136,6 @@ export const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
-        // Turn timing (debug). turnStart = when this turn began processing;
-        // firstTokenAt = first model output token across all steps (TTFT);
-        // firstTokenReqStart = the dispatch time of the step that produced it,
-        // so provider TTFT can be isolated from pre-call setup. One turn.done
-        // line is emitted at the end; per-step lines would be noisy.
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
         let firstTokenReqStart: number | undefined

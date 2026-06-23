@@ -1405,8 +1405,8 @@ export const layer = Layer.effect(
 
         yield* Effect.logDebug("turn.done", {
           "session.id": sessionID,
-          turn_ms: Date.now() - turnStart,
           ttft_ms: firstTokenAt !== undefined ? firstTokenAt - turnStart : undefined,
+          turn_ms: Date.now() - turnStart,
           steps: step,
         })
 

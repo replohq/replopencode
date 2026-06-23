@@ -37,6 +37,8 @@ export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
+  readonly firstTokenAt: number | undefined
+  readonly requestStartAt: number | undefined
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -81,6 +83,8 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   currentTextID: string | undefined
+  firstTokenAt: number | undefined
+  requestStartAt: number | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   v2AssistantMessageID: SessionMessage.ID | undefined
 }
@@ -123,6 +127,8 @@ export const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         currentTextID: undefined,
+        firstTokenAt: undefined,
+        requestStartAt: undefined,
         reasoningMap: {},
         v2AssistantMessageID: undefined,
       }
@@ -372,6 +378,7 @@ export const layer = Layer.effect(
         switch (value.type) {
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
+            if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (mirrorAssistant) {
               yield* events.publish(SessionEvent.Reasoning.Started, {
@@ -757,6 +764,7 @@ export const layer = Layer.effect(
           }
 
           case "text-start":
+            if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
             if (!ctx.assistantMessage.summary) {
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               if (mirrorAssistant) {
@@ -971,6 +979,7 @@ export const layer = Layer.effect(
             ctx.currentTextID = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
+            ctx.requestStartAt = Date.now()
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
@@ -1036,6 +1045,12 @@ export const layer = Layer.effect(
       return {
         get message() {
           return ctx.assistantMessage
+        },
+        get firstTokenAt() {
+          return ctx.firstTokenAt
+        },
+        get requestStartAt() {
+          return ctx.requestStartAt
         },
         updateToolCall,
         completeToolCall,

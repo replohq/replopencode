@@ -1136,6 +1136,9 @@ export const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        const turnStart = Date.now()
+        let firstTokenAt: number | undefined
+        let firstTokenReqStart: number | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1346,6 +1349,11 @@ export const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
+            if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
+              firstTokenAt = handle.firstTokenAt
+              firstTokenReqStart = handle.requestStartAt
+            }
+
             if (structured !== undefined) {
               handle.message.structured = structured
               handle.message.finish = handle.message.finish ?? "stop"
@@ -1395,6 +1403,17 @@ export const layer = Layer.effect(
           if (outcome === "break") break
           continue
         }
+
+        yield* Effect.logDebug("turn.done", {
+          "session.id": sessionID,
+          ttft_ms: firstTokenAt !== undefined ? firstTokenAt - turnStart : undefined,
+          provider_ttft_ms:
+            firstTokenAt !== undefined && firstTokenReqStart !== undefined
+              ? firstTokenAt - firstTokenReqStart
+              : undefined,
+          turn_ms: Date.now() - turnStart,
+          steps: step,
+        })
 
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)

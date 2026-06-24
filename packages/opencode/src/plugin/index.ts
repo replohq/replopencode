@@ -163,6 +163,7 @@ export const layer = Layer.effect(
           $: typeof Bun === "undefined" ? undefined : Bun.$,
         }
 
+        const __tInternal = Date.now()
         for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
@@ -173,12 +174,18 @@ export const layer = Layer.effect(
           )
           if (init._tag === "Some") hooks.push(init.value)
         }
+        yield* Effect.logDebug("warmup.timing", { phase: "plugin.internal", ms: Date.now() - __tInternal })
 
         const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
         if (flags.pure && cfg.plugin_origins?.length) {
         }
-        if (plugins.length) yield* config.waitForDependencies()
+        if (plugins.length) {
+          const __tWait = Date.now()
+          yield* config.waitForDependencies()
+          yield* Effect.logDebug("warmup.timing", { phase: "plugin.waitForDependencies", ms: Date.now() - __tWait })
+        }
 
+        const __tLoad = Date.now()
         const loaded = yield* Effect.promise(() =>
           PluginLoader.loadExternal({
             items: plugins,
@@ -212,6 +219,7 @@ export const layer = Layer.effect(
             },
           }),
         )
+        yield* Effect.logDebug("warmup.timing", { phase: "plugin.loadExternal", ms: Date.now() - __tLoad, loaded: loaded.length })
         for (const load of loaded) {
           if (!load) continue
 

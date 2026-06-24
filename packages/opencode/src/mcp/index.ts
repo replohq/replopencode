@@ -482,6 +482,7 @@ export const layer = Layer.effect(
           defs: {},
         }
 
+        const __tMcp = Date.now()
         yield* Effect.forEach(
           Object.entries(config),
           ([key, mcp]) =>
@@ -506,6 +507,7 @@ export const layer = Layer.effect(
             }),
           { concurrency: "unbounded" },
         )
+        yield* Effect.logDebug("warmup.timing", { phase: "mcp.connectAll", ms: Date.now() - __tMcp, servers: Object.keys(config).length })
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {

@@ -170,11 +170,16 @@ export const layer = Layer.effect(
           }
         }
 
+        const __tTotal = Date.now()
         const dirs = yield* config.directories()
         const matches = dirs.flatMap((dir) =>
           Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
         )
-        if (matches.length) yield* config.waitForDependencies()
+        if (matches.length) {
+          const __tWait = Date.now()
+          yield* config.waitForDependencies()
+          yield* Effect.logDebug("warmup.timing", { phase: "tool.waitForDependencies", ms: Date.now() - __tWait })
+        }
         for (const match of matches) {
           const namespace = path.basename(match, path.extname(match))
           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
@@ -186,7 +191,9 @@ export const layer = Layer.effect(
           }
         }
 
+        const __tPlugins = Date.now()
         const plugins = yield* plugin.list()
+        yield* Effect.logDebug("warmup.timing", { phase: "tool.pluginList", ms: Date.now() - __tPlugins, plugins: plugins.length })
         for (const p of plugins) {
           for (const [id, def] of Object.entries(p.tool ?? {})) {
             custom.push(fromPlugin(id, def))
@@ -196,6 +203,7 @@ export const layer = Layer.effect(
         yield* config.get()
         const questionEnabled = ["app", "cli", "desktop"].includes(flags.client) || flags.enableQuestionTool
 
+        const __tTools = Date.now()
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
@@ -214,6 +222,8 @@ export const layer = Layer.effect(
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
         })
+        yield* Effect.logDebug("warmup.timing", { phase: "tool.builtinInit", ms: Date.now() - __tTools })
+        yield* Effect.logDebug("warmup.timing", { phase: "tool.registry.total", ms: Date.now() - __tTotal, customTools: custom.length })
 
         return {
           custom,

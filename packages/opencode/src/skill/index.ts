@@ -259,7 +259,8 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const discovered = yield* InstanceState.make(
       Effect.fn("Skill.discovery")(function* (ctx) {
-        return yield* discoverSkills(
+        const __tSkill = Date.now()
+        const result = yield* discoverSkills(
           config,
           discovery,
           fsys,
@@ -269,6 +270,8 @@ export const layer = Layer.effect(
           ctx.directory,
           ctx.worktree,
         )
+        yield* Effect.logDebug("warmup.timing", { phase: "skill.discovery", ms: Date.now() - __tSkill })
+        return result
       }),
     )
     const state = yield* InstanceState.make(

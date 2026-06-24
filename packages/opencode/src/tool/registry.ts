@@ -181,27 +181,22 @@ export const layer = Layer.effect(
           yield* Effect.logDebug("warmup.timing", { phase: "tool.waitForDependencies", ms: Date.now() - __tWait })
         }
         const __tImports = Date.now()
-        let __slowest = { name: "", ms: 0 }
-        for (const match of matches) {
-          const namespace = path.basename(match, path.extname(match))
-          // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
-          // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const __tOne = Date.now()
-          const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
-          const __oneMs = Date.now() - __tOne
-          if (__oneMs > __slowest.ms) __slowest = { name: namespace, ms: __oneMs }
-          for (const [id, def] of Object.entries(mod)) {
+        // Import custom tool modules concurrently. They are independent and these
+        // dynamic imports dominate registry init (~2.5s sequential for ~13 files).
+        // Imported as `file://` so Node on Windows accepts the dynamic import.
+        // Effect.all preserves input order, so tool registration order is unchanged.
+        const imported = yield* Effect.all(
+          matches.map((match) => Effect.promise(() => import(pathToFileURL(match).href))),
+          { concurrency: "unbounded" },
+        )
+        for (let i = 0; i < imported.length; i++) {
+          const namespace = path.basename(matches[i], path.extname(matches[i]))
+          for (const [id, def] of Object.entries(imported[i])) {
             if (!isPluginTool(def)) continue
             custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
           }
         }
-        yield* Effect.logDebug("warmup.timing", {
-          phase: "tool.customImports",
-          ms: Date.now() - __tImports,
-          count: matches.length,
-          slowest: __slowest.name,
-          slowestMs: __slowest.ms,
-        })
+        yield* Effect.logDebug("warmup.timing", { phase: "tool.customImports", ms: Date.now() - __tImports, count: matches.length })
 
         const __tPlugins = Date.now()
         const plugins = yield* plugin.list()

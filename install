@@ -87,7 +87,6 @@ mkdir -p "$INSTALL_DIR"
 # Only dirs that already exist are touched, so the human curl|bash path is a
 # no-op (these absolute paths never exist on a personal machine).
 PREPOPULATE_DIRS=${OPENCODE_PREPOPULATE_DIRS:-"/root/.config/opencode /workspace/.opencode /root/.opencode"}
-PLAYWRIGHT_PRIMARY_DIR="/root/.config/opencode"
 
 # If --binary is provided, skip all download/detection logic
 if [ -n "$binary_path" ]; then
@@ -440,18 +439,6 @@ prepopulate_deps() {
         fi
         [ -d "$dir/node_modules/@opencode-ai/plugin" ] || {
             print_message error "FATAL: @opencode-ai/plugin not installed in ${dir}"; exit 1; }
-
-        if [ "$dir" = "$PLAYWRIGHT_PRIMARY_DIR" ] && [ -n "${OPENCODE_PLAYWRIGHT_VERSION:-}" ]; then
-            local pw_spec="playwright@${OPENCODE_PLAYWRIGHT_VERSION}"
-            print_message info "${MUTED}Prepopulating ${NC}${pw_spec}${MUTED} in ${NC}${dir}"
-            if ! npm_install_exact "$dir" "$pw_spec"; then
-                print_message error "FATAL: npm install ${pw_spec} failed in ${dir}"; exit 1
-            fi
-            [ -d "$dir/node_modules/playwright" ] || {
-                print_message error "FATAL: playwright not installed in ${dir}"; exit 1; }
-            ( cd "$dir" && node --input-type=module -e "await import('playwright')" ) || {
-                print_message error "FATAL: playwright not importable in ${dir}"; exit 1; }
-        fi
 
         patch_plugin_lockfile "$dir" "$plugin_spec" "$base"
     done

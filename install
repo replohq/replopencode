@@ -212,20 +212,8 @@ else
         sums_url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/SHA256SUMS"
         specific_version=$requested_version
 
-        # Verify the release exists before downloading
+        # Missing release is a hard error (cut it) — never fall back to a legacy bare tag, which would install a pre-packaging binary.
         http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/replohq/replopencode/releases/tag/v${requested_version}")
-        # Fall back to the bare base if a normalized -1 tag is absent (pre-versioning releases).
-        if [ "$http_status" = "404" ] && [ "${requested_version%-1}" != "$requested_version" ]; then
-            base_version="${requested_version%-1}"
-            if [ "$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/replohq/replopencode/releases/tag/v${base_version}")" != "404" ]; then
-                echo -e "${MUTED}Release v${requested_version} not found; falling back to v${base_version}${NC}"
-                requested_version="$base_version"
-                url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/$filename"
-                sums_url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/SHA256SUMS"
-                specific_version=$requested_version
-                http_status=200
-            fi
-        fi
         if [ "$http_status" = "404" ]; then
             echo -e "${RED}Error: Release v${requested_version} not found${NC}"
             echo -e "${MUTED}Available releases: https://github.com/replohq/replopencode/releases${NC}"

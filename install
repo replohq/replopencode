@@ -27,8 +27,7 @@ EOF
 }
 
 normalize_version() {
-    # A bare base version (no -suffix) means patch 1: 1.17.9 -> 1.17.9-1.
-    # Anything with a -suffix (-1, -1-rc.1, -warmtiming.3) is authored as-is.
+    # Bare base version means patch 1 (1.17.9 -> 1.17.9-1); a -suffix is kept as-is.
     local v="${1#v}"
     case "$v" in
         *-*) printf '%s' "$v" ;;
@@ -82,10 +81,7 @@ fi
 INSTALL_DIR=$HOME/.opencode/bin
 mkdir -p "$INSTALL_DIR"
 
-# Replo dependency prepopulation. The config dirs are fixed in production;
-# OPENCODE_PREPOPULATE_DIRS is a test-only override defaulting to that set.
-# Only dirs that already exist are touched, so the human curl|bash path is a
-# no-op (these absolute paths never exist on a personal machine).
+# Replo prepopulation dirs (test override: OPENCODE_PREPOPULATE_DIRS); only existing dirs are touched, so curl|bash stays a no-op.
 PREPOPULATE_DIRS=${OPENCODE_PREPOPULATE_DIRS:-"/root/.config/opencode /workspace/.opencode /root/.opencode"}
 
 # If --binary is provided, skip all download/detection logic
@@ -406,20 +402,6 @@ npm_install_exact() {
         --workspaces=false --no-audit --no-fund --no-progress --omit=optional "$@" )
 }
 
-patch_plugin_lockfile() {
-    local dir="$1" spec="$2" base="$3"
-    node -e '
-      const fs = require("fs");
-      const [dir, spec, base] = process.argv.slice(1);
-      const p = dir + "/package-lock.json";
-      if (!fs.existsSync(p)) { console.error("FATAL: no package-lock.json in " + dir); process.exit(1); }
-      const l = JSON.parse(fs.readFileSync(p, "utf8"));
-      l.packages ??= {}; l.packages[""] ??= {}; l.packages[""].dependencies ??= {};
-      l.packages[""].dependencies[spec] = base;
-      fs.writeFileSync(p, JSON.stringify(l, null, 2) + "\n");
-    ' "$dir" "$spec" "$base"
-}
-
 prepopulate_deps() {
     # No usable version (e.g. a bare --binary dev install) -> nothing to pin.
     if [ -z "$specific_version" ] || [ "$specific_version" = "local" ]; then
@@ -439,8 +421,6 @@ prepopulate_deps() {
         fi
         [ -d "$dir/node_modules/@opencode-ai/plugin" ] || {
             print_message error "FATAL: @opencode-ai/plugin not installed in ${dir}"; exit 1; }
-
-        patch_plugin_lockfile "$dir" "$plugin_spec" "$base"
     done
     [ "$touched" = true ] && print_message info "${MUTED}Dependency prepopulation complete${NC}"
     return 0

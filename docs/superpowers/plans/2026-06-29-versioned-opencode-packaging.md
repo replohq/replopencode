@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Version format:** `REPLO_OPENCODE_VERSION = <base>-<N>` (e.g. `1.17.9-3`). `<base>` = upstream opencode version; `<N>` = fork patch iteration.
+- **Version format:** `REPLO_OPENCODE_VERSION = <base>-<N>` (e.g. `1.17.9-1`). `<base>` = upstream opencode version; `<N>` = fork patch iteration.
 - **Plugin version is derived, never specified:** `base="${version%%-*}"` → `@opencode-ai/plugin@<base>`.
 - **Repo split:** fork changes (`install`, release flow) → cwd `/Users/andrew/code/replopencode` on branch `feat/versioned-opencode-packaging`. Codebase changes (Dockerfile, `entries.ts`, delete the mjs) → `/Users/andrew/code/worktree-1`, on a **new branch off `origin/main`** (the `curlInstall` machinery from PR #22104 is on `main`, not the current worktree branch).
 - **Config dirs are fixed** (no user-facing flag): `/root/.config/opencode`, `/workspace/.opencode`, `/root/.opencode`. `OPENCODE_PREPOPULATE_DIRS` exists only as a test seam, defaulting to that exact set.
@@ -53,7 +53,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # A fake binary so --binary skips network download; prints the fork banner.
-fake=$(mktemp); printf '#!/bin/sh\necho "Replopencode v1.17.9-3"\n' > "$fake"; chmod +x "$fake"
+fake=$(mktemp); printf '#!/bin/sh\necho "Replopencode v1.17.9-1"\n' > "$fake"; chmod +x "$fake"
 
 tmp=$(mktemp -d)
 existing="$tmp/exists/opencode"   # will exist -> should be prepopulated
@@ -62,7 +62,7 @@ absent="$tmp/absent/opencode"     # will NOT exist -> must be skipped
 
 export HOME="$tmp/home"; mkdir -p "$HOME"
 OPENCODE_PREPOPULATE_DIRS="$existing $absent" \
-  bash install --binary "$fake" --version 1.17.9-3 --no-modify-path >/dev/null
+  bash install --binary "$fake" --version 1.17.9-1 --no-modify-path >/dev/null
 
 test -d "$existing/node_modules/@opencode-ai/plugin" || { echo "FAIL: plugin not installed in existing dir"; exit 1; }
 test ! -e "$absent" || { echo "FAIL: absent dir was created"; exit 1; }
@@ -198,7 +198,7 @@ Expected: `PASS` (plugin installed in the existing dir, absent dir untouched, lo
 
 Run:
 ```bash
-rm -rf /tmp/oc-human && HOME=/tmp/oc-human bash install --binary "$(mktemp)" --version 1.17.9-3 --no-modify-path 2>/dev/null; \
+rm -rf /tmp/oc-human && HOME=/tmp/oc-human bash install --binary "$(mktemp)" --version 1.17.9-1 --no-modify-path 2>/dev/null; \
 find /tmp/oc-human -path '*node_modules/@opencode-ai/plugin*' | head -1
 ```
 Expected: no output (no Replo config dirs exist under the fake HOME, so prepopulate is a no-op). (The temp file passed to `--binary` just stands in for a binary; we only assert no prepopulation happened.)
@@ -385,11 +385,11 @@ Add to the **Critical rules** table:
 
 Run from the fork repo on `feat/versioned-opencode-packaging`:
 ```bash
-OPENCODE_VERSION=1.17.9-3-rc.1 \
+OPENCODE_VERSION=1.17.9-1-rc.1 \
 OPENCODE_TARGETS="opencode-linux-x64,opencode-linux-x64-baseline,opencode-linux-arm64,opencode-darwin-arm64" \
   bun run --cwd packages/opencode build --skip-embed-web-ui
 ```
-Expected: builds complete; the darwin smoke test prints `Replopencode v1.17.9-3-rc.1`.
+Expected: builds complete; the darwin smoke test prints `Replopencode v1.17.9-1-rc.1`.
 
 - [ ] **Step 4: Archive + generate SHA256SUMS**
 
@@ -406,9 +406,9 @@ Expected: `SHA256SUMS` lists one hash per archive.
 - [ ] **Step 5: Cut the staging prerelease (pointed at this branch)**
 
 ```bash
-gh release create v1.17.9-3-rc.1 --repo replohq/replopencode \
+gh release create v1.17.9-1-rc.1 --repo replohq/replopencode \
   --target feat/versioned-opencode-packaging --prerelease \
-  --title "Replopencode v1.17.9-3-rc.1 (versioned packaging)" \
+  --title "Replopencode v1.17.9-1-rc.1 (versioned packaging)" \
   packages/opencode/dist/*.tar.gz packages/opencode/dist/*.zip packages/opencode/dist/SHA256SUMS
 ```
 Expected: prerelease created; assets include `SHA256SUMS`; not marked latest.
@@ -416,10 +416,10 @@ Expected: prerelease created; assets include `SHA256SUMS`; not marked latest.
 - [ ] **Step 6: Verify checksum end-to-end on the dev machine (binary-only path)**
 
 ```bash
-rm -rf /tmp/oc-rc && HOME=/tmp/oc-rc bash install --version 1.17.9-3-rc.1 --no-modify-path
+rm -rf /tmp/oc-rc && HOME=/tmp/oc-rc bash install --version 1.17.9-1-rc.1 --no-modify-path
 /tmp/oc-rc/.opencode/bin/opencode --version
 ```
-Expected: log shows `Checksum verified for opencode-darwin-arm64.zip` (or your host archive); version prints `Replopencode v1.17.9-3-rc.1`; no Replo config dirs exist on the dev mac so no prepopulation runs.
+Expected: log shows `Checksum verified for opencode-darwin-arm64.zip` (or your host archive); version prints `Replopencode v1.17.9-1-rc.1`; no Replo config dirs exist on the dev mac so no prepopulation runs.
 
 - [ ] **Step 7: Commit the runbook changes**
 
@@ -441,12 +441,12 @@ The fork repo has no code change in this task; the deliverable is the published 
 
 On the sandbox:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/replohq/replopencode/v1.17.9-3-rc.1/install | VERSION=1.17.9-3-rc.1 bash
+curl -fsSL https://raw.githubusercontent.com/replohq/replopencode/v1.17.9-1-rc.1/install | VERSION=1.17.9-1-rc.1 bash
 ```
 
 - [ ] **Step 3: Observe and record**
 
-- `opencode --version` → `Replopencode v1.17.9-3-rc.1`.
+- `opencode --version` → `Replopencode v1.17.9-1-rc.1`.
 - `@opencode-ai/plugin@1.17.9` present in each existing config dir:
   ```bash
   for d in /root/.config/opencode /workspace/.opencode /root/.opencode; do
@@ -471,21 +471,21 @@ Only after the checkpoint passes. This produces the real artifact the monorepo p
 
 - [ ] **Step 1: Merge `feat/versioned-opencode-packaging` to `dev`** (PR + merge per normal review).
 
-- [ ] **Step 2: Build, archive, SHA256SUMS off `dev`** (repeat Task 3 steps 3-4 with `OPENCODE_VERSION=1.17.9-3`).
+- [ ] **Step 2: Build, archive, SHA256SUMS off `dev`** (repeat Task 3 steps 3-4 with `OPENCODE_VERSION=1.17.9-1`).
 
 - [ ] **Step 3: Create the stable, latest release with checksums**
 
 ```bash
-gh release create v1.17.9-3 --repo replohq/replopencode --target dev --latest \
-  --title "Replopencode v1.17.9-3" --notes "Version-driven packaging: install now prepopulates @opencode-ai/plugin; SHA256SUMS published." \
+gh release create v1.17.9-1 --repo replohq/replopencode --target dev --latest \
+  --title "Replopencode v1.17.9-1" --notes "Version-driven packaging: install now prepopulates @opencode-ai/plugin; SHA256SUMS published." \
   packages/opencode/dist/*.tar.gz packages/opencode/dist/*.zip packages/opencode/dist/SHA256SUMS
 ```
-Expected: `v1.17.9-3` is latest; assets include `SHA256SUMS`; tag carries the updated `install`.
+Expected: `v1.17.9-1` is latest; assets include `SHA256SUMS`; tag carries the updated `install`.
 
 - [ ] **Step 4: Delete the staging prerelease** (the stable `--latest` shadows it):
 ```bash
-gh release delete v1.17.9-3-rc.1 --repo replohq/replopencode --yes
-git push origin :refs/tags/v1.17.9-3-rc.1
+gh release delete v1.17.9-1-rc.1 --repo replohq/replopencode --yes
+git push origin :refs/tags/v1.17.9-1-rc.1
 ```
 
 ---
@@ -516,7 +516,7 @@ In `sandbox-packages/sandbox-upgrader/src/entries.ts`, import `curlInstall` from
 ```ts
 curlInstall({
   name: "opencode",
-  version: "1.17.9-3",
+  version: "1.17.9-1",
   script:
     "curl -fsSL https://raw.githubusercontent.com/replohq/replopencode/v{version}/install | VERSION={version} bash",
   probeCommand: "opencode --version",
@@ -524,12 +524,12 @@ curlInstall({
   onChange: ["restart-opencode"],
 }),
 ```
-(No `OPENCODE_PLAYWRIGHT_VERSION` in the script → converge reconciles binary + plugin only. `probePattern` captures `1.17.9-3` from `Replopencode v1.17.9-3`, matching `version`.)
+(No `OPENCODE_PLAYWRIGHT_VERSION` in the script → converge reconciles binary + plugin only. `probePattern` captures `1.17.9-1` from `Replopencode v1.17.9-1`, matching `version`.)
 
 - [ ] **Step 3: Assemble to validate the entry resolves**
 
 Run: `cd sandbox-packages/sandbox-upgrader && pnpm assemble`
-Expected: assemble succeeds (the install entry is well-formed and `version` passes `assertShellSafe`). Verify `1.17.9-3` does not trip the shell-safety check (`.` and `-` are allowed).
+Expected: assemble succeeds (the install entry is well-formed and `version` passes `assertShellSafe`). Verify `1.17.9-1` does not trip the shell-safety check (`.` and `-` are allowed).
 
 - [ ] **Step 4: Run the package unit tests**
 
@@ -558,11 +558,11 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `docker build` of the snapshot stage.
 
 **Interfaces:**
-- Consumes: the published stable release `v1.17.9-3` carrying `install` + `SHA256SUMS`; `PLAYWRIGHT_VERSION` ARG.
+- Consumes: the published stable release `v1.17.9-1` carrying `install` + `SHA256SUMS`; `PLAYWRIGHT_VERSION` ARG.
 
 - [ ] **Step 1: Drop the derived ARG**
 
-Remove the `ARG OPENCODE_PLUGIN_NPM_VERSION=...` line (~line 104) and any later re-declaration. Keep `ARG REPLO_OPENCODE_VERSION=1.17.9-3` and `ARG PLAYWRIGHT_VERSION=...`. Update the comment block (~line 96-101) to state the plugin version is derived inside `install`.
+Remove the `ARG OPENCODE_PLUGIN_NPM_VERSION=...` line (~line 104) and any later re-declaration. Keep `ARG REPLO_OPENCODE_VERSION=1.17.9-1` and `ARG PLAYWRIGHT_VERSION=...`. Update the comment block (~line 96-101) to state the plugin version is derived inside `install`.
 
 - [ ] **Step 2: Collapse install + prepopulate into one RUN**
 
@@ -594,7 +594,7 @@ Expected: build succeeds; binary + `@opencode-ai/plugin@1.17.9` in all three con
 
 In a shell in the built image:
 ```bash
-opencode --version   # Replopencode v1.17.9-3
+opencode --version   # Replopencode v1.17.9-1
 for d in /root/.config/opencode /workspace/.opencode /root/.opencode; do test -d "$d/node_modules/@opencode-ai/plugin" && echo "OK $d"; done
 test -d /root/.config/opencode/node_modules/playwright && echo "OK playwright"
 ```

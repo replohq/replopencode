@@ -53,7 +53,7 @@ free from supply-chain risk.
 
 ## Versioning model (keystone)
 
-`REPLO_OPENCODE_VERSION = <base>-<N>`, e.g. `1.17.9-3`:
+`REPLO_OPENCODE_VERSION = <base>-<N>`, e.g. `1.17.9-1`:
 
 - `<base>` — upstream opencode version. Determines `@opencode-ai/plugin@<base>`.
 - `<N>` — fork patch iteration.
@@ -143,11 +143,11 @@ machinery from PR #22104 is **already merged**):
 ```ts
 curlInstall({
   target: "opencode",
-  version: "1.17.9-3", // = REPLO_OPENCODE_VERSION (the one place besides the Dockerfile)
+  version: "1.17.9-1", // = REPLO_OPENCODE_VERSION (the one place besides the Dockerfile)
   script:
     "curl -fsSL https://raw.githubusercontent.com/replohq/replopencode/v{version}/install | VERSION={version} bash",
   probeCommand: "opencode --version",
-  probePattern: /* semver capture; matches "Replopencode v1.17.9-3" */,
+  probePattern: /* semver capture; matches "Replopencode v1.17.9-1" */,
   onChange: ["restart-opencode"], // idle-aware, never mid-turn
 })
 ```

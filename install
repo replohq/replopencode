@@ -26,6 +26,16 @@ Examples:
 EOF
 }
 
+normalize_version() {
+    # A bare base version (no -suffix) means patch 1: 1.17.9 -> 1.17.9-1.
+    # Anything with a -suffix (-1, -1-rc.1, -warmtiming.3) is authored as-is.
+    local v="${1#v}"
+    case "$v" in
+        *-*) printf '%s' "$v" ;;
+        *)   printf '%s' "${v}-1" ;;
+    esac
+}
+
 requested_version=${VERSION:-}
 no_modify_path=false
 binary_path=""
@@ -64,6 +74,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$requested_version" ]; then
+    requested_version="$(normalize_version "$requested_version")"
+fi
 
 INSTALL_DIR=$HOME/.opencode/bin
 mkdir -p "$INSTALL_DIR"

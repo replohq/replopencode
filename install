@@ -189,6 +189,7 @@ else
 
     if [ -z "$requested_version" ]; then
         url="https://github.com/replohq/replopencode/releases/latest/download/$filename"
+        sums_url="https://github.com/replohq/replopencode/releases/latest/download/SHA256SUMS"
         specific_version=$(curl -s https://api.github.com/repos/replohq/replopencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
@@ -199,6 +200,7 @@ else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"
         url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/$filename"
+        sums_url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/SHA256SUMS"
         specific_version=$requested_version
 
         # Verify the release exists before downloading
@@ -327,6 +329,35 @@ download_with_progress() {
     return $ret
 }
 
+verify_checksum() {
+    local file="$1" name="$2" sums_url="$3"
+    local sums="${file}.SHA256SUMS"
+    if ! curl -fsSL -o "$sums" "$sums_url"; then
+        print_message error "${RED}Error: failed to download SHA256SUMS from ${sums_url}${NC}"; exit 1
+    fi
+    # SHA256SUMS lines are "<hash>  <name>" or "<hash> *<name>".
+    local expected
+    expected=$(awk -v f="$name" '($2==f)||($2=="*"f){print $1; exit}' "$sums")
+    if [ -z "$expected" ]; then
+        print_message error "${RED}Error: no checksum for ${name} in SHA256SUMS${NC}"; exit 1
+    fi
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        print_message error "${RED}Error: neither sha256sum nor shasum is available${NC}"; exit 1
+    fi
+    if [ "$expected" != "$actual" ]; then
+        print_message error "${RED}Error: checksum mismatch for ${name}${NC}"
+        print_message error "  expected: ${expected}"
+        print_message error "  actual:   ${actual}"
+        exit 1
+    fi
+    print_message info "${MUTED}Checksum verified for ${NC}${name}"
+}
+
 download_and_install() {
     print_message info "\n${MUTED}Installing ${NC}opencode ${MUTED}version: ${NC}$specific_version"
     local tmp_dir="${TMPDIR:-/tmp}/opencode_install_$$"
@@ -336,6 +367,8 @@ download_and_install() {
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
         curl -# -L -o "$tmp_dir/$filename" "$url"
     fi
+
+    verify_checksum "$tmp_dir/$filename" "$filename" "$sums_url"
 
     if [ "$os" = "linux" ]; then
         tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"

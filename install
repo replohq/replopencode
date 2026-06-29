@@ -26,6 +26,15 @@ Examples:
 EOF
 }
 
+normalize_version() {
+    # Bare base version means patch 1 (1.17.9 -> 1.17.9-1); a -suffix is kept as-is.
+    local v="${1#v}"
+    case "$v" in
+        *-*) printf '%s' "$v" ;;
+        *)   printf '%s' "${v}-1" ;;
+    esac
+}
+
 requested_version=${VERSION:-}
 no_modify_path=false
 binary_path=""
@@ -65,8 +74,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -n "$requested_version" ]; then
+    requested_version="$(normalize_version "$requested_version")"
+fi
+
 INSTALL_DIR=$HOME/.opencode/bin
 mkdir -p "$INSTALL_DIR"
+
+# Replo prepopulation dirs (test override: OPENCODE_PREPOPULATE_DIRS); only existing dirs are touched, so curl|bash stays a no-op.
+PREPOPULATE_DIRS=${OPENCODE_PREPOPULATE_DIRS:-"/root/.config/opencode /workspace/.opencode /root/.opencode"}
 
 # If --binary is provided, skip all download/detection logic
 if [ -n "$binary_path" ]; then
@@ -74,7 +90,7 @@ if [ -n "$binary_path" ]; then
         echo -e "${RED}Error: Binary not found at ${binary_path}${NC}"
         exit 1
     fi
-    specific_version="local"
+    specific_version="${requested_version:-local}"
 else
     raw_os=$(uname -s)
     os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
@@ -182,6 +198,7 @@ else
 
     if [ -z "$requested_version" ]; then
         url="https://github.com/replohq/replopencode/releases/latest/download/$filename"
+        sums_url="https://github.com/replohq/replopencode/releases/latest/download/SHA256SUMS"
         specific_version=$(curl -s https://api.github.com/repos/replohq/replopencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 
         if [[ $? -ne 0 || -z "$specific_version" ]]; then
@@ -192,9 +209,10 @@ else
         # Strip leading 'v' if present
         requested_version="${requested_version#v}"
         url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/$filename"
+        sums_url="https://github.com/replohq/replopencode/releases/download/v${requested_version}/SHA256SUMS"
         specific_version=$requested_version
 
-        # Verify the release exists before downloading
+        # Missing release is a hard error (cut it) — never fall back to a legacy bare tag, which would install a pre-packaging binary.
         http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/replohq/replopencode/releases/tag/v${requested_version}")
         if [ "$http_status" = "404" ]; then
             echo -e "${RED}Error: Release v${requested_version} not found${NC}"
@@ -220,18 +238,14 @@ print_message() {
 
 check_version() {
     if command -v opencode >/dev/null 2>&1; then
-        opencode_path=$(which opencode)
-
-        ## Check the installed version
         installed_version=$(opencode --version 2>/dev/null || echo "")
-
-        if [[ "$installed_version" != "$specific_version" ]]; then
-            print_message info "${MUTED}Installed version: ${NC}$installed_version."
-        else
-            print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed"
-            exit 0
+        if [[ "$installed_version" == "$specific_version" ]]; then
+            print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed${NC}"
+            return 1
         fi
+        print_message info "${MUTED}Installed version: ${NC}$installed_version."
     fi
+    return 0
 }
 
 unbuffered_sed() {
@@ -324,6 +338,35 @@ download_with_progress() {
     return $ret
 }
 
+verify_checksum() {
+    local file="$1" name="$2" sums_url="$3"
+    local sums="${file}.SHA256SUMS"
+    if ! curl -fsSL -o "$sums" "$sums_url"; then
+        print_message error "${RED}Error: failed to download SHA256SUMS from ${sums_url}${NC}"; exit 1
+    fi
+    # SHA256SUMS lines are "<hash>  <name>" or "<hash> *<name>".
+    local expected
+    expected=$(awk -v f="$name" '($2==f)||($2=="*"f){print $1; exit}' "$sums")
+    if [ -z "$expected" ]; then
+        print_message error "${RED}Error: no checksum for ${name} in SHA256SUMS${NC}"; exit 1
+    fi
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        print_message error "${RED}Error: neither sha256sum nor shasum is available${NC}"; exit 1
+    fi
+    if [ "$expected" != "$actual" ]; then
+        print_message error "${RED}Error: checksum mismatch for ${name}${NC}"
+        print_message error "  expected: ${expected}"
+        print_message error "  actual:   ${actual}"
+        exit 1
+    fi
+    print_message info "${MUTED}Checksum verified for ${NC}${name}"
+}
+
 download_and_install() {
     print_message info "\n${MUTED}Installing ${NC}opencode ${MUTED}version: ${NC}$specific_version"
     local tmp_dir="${TMPDIR:-/tmp}/opencode_install_$$"
@@ -333,6 +376,8 @@ download_and_install() {
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
         curl -# -L -o "$tmp_dir/$filename" "$url"
     fi
+
+    verify_checksum "$tmp_dir/$filename" "$filename" "$sums_url"
 
     if [ "$os" = "linux" ]; then
         tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
@@ -351,12 +396,45 @@ install_from_binary() {
     chmod 755 "${INSTALL_DIR}/opencode"
 }
 
+npm_install_exact() {
+    local dir="$1"; shift
+    ( cd "$dir" && npm install --silent --save-exact --package-lock=true \
+        --workspaces=false --no-audit --no-fund --no-progress --omit=optional "$@" )
+}
+
+prepopulate_deps() {
+    # No usable version (e.g. a bare --binary dev install) -> nothing to pin.
+    if [ -z "$specific_version" ] || [ "$specific_version" = "local" ]; then
+        return 0
+    fi
+    local base="${specific_version%%-*}"
+    local plugin_spec="@opencode-ai/plugin@${base}"
+    local touched=false
+    for dir in $PREPOPULATE_DIRS; do
+        [ -d "$dir" ] || continue
+        touched=true
+        print_message info "${MUTED}Prepopulating ${NC}${plugin_spec}${MUTED} in ${NC}${dir}"
+        [ -f "$dir/package.json" ] || printf '{\n  "private": true\n}\n' > "$dir/package.json"
+
+        if ! npm_install_exact "$dir" "$plugin_spec"; then
+            print_message error "FATAL: npm install ${plugin_spec} failed in ${dir}"; exit 1
+        fi
+        [ -d "$dir/node_modules/@opencode-ai/plugin" ] || {
+            print_message error "FATAL: @opencode-ai/plugin not installed in ${dir}"; exit 1; }
+    done
+    [ "$touched" = true ] && print_message info "${MUTED}Dependency prepopulation complete${NC}"
+    return 0
+}
+
 if [ -n "$binary_path" ]; then
     install_from_binary
 else
-    check_version
-    download_and_install
+    if check_version; then
+        download_and_install
+    fi
 fi
+
+prepopulate_deps
 
 
 add_to_path() {

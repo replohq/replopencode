@@ -142,7 +142,7 @@ machinery from PR #22104 is **already merged**):
 
 ```ts
 curlInstall({
-  target: "opencode",
+  name: "opencode",
   version: "1.17.9-1", // = REPLO_OPENCODE_VERSION (the one place besides the Dockerfile)
   script:
     "curl -fsSL https://raw.githubusercontent.com/replohq/replopencode/v{version}/install | VERSION={version} bash",

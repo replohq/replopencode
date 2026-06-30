@@ -26,13 +26,9 @@ Examples:
 EOF
 }
 
-normalize_version() {
-    # Bare base version means patch 1 (1.17.9 -> 1.17.9-1); a -suffix is kept as-is.
-    local v="${1#v}"
-    case "$v" in
-        *-*) printf '%s' "$v" ;;
-        *)   printf '%s' "${v}-1" ;;
-    esac
+# A packaging release is always base + patch suffix (e.g. 1.17.9-1); a bare base is rejected, never guessed.
+has_patch_suffix() {
+    case "${1#v}" in *-*) return 0 ;; *) return 1 ;; esac
 }
 
 requested_version=${VERSION:-}
@@ -75,7 +71,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -n "$requested_version" ]; then
-    requested_version="$(normalize_version "$requested_version")"
+    requested_version="${requested_version#v}"
+    if ! has_patch_suffix "$requested_version"; then
+        echo -e "${RED}Error: version '${requested_version}' needs a packaging patch suffix (did you mean ${requested_version}-1?)${NC}"
+        echo -e "${MUTED}Pin an exact release tag: https://github.com/replohq/replopencode/releases${NC}"
+        exit 1
+    fi
 fi
 
 INSTALL_DIR=$HOME/.opencode/bin

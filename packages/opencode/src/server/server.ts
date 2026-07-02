@@ -8,6 +8,7 @@ import { createServer } from "node:http"
 import { MDNS } from "./mdns"
 import { HttpApiApp } from "./routes/instance/httpapi/server"
 import { HarnessReload } from "./harness-reload"
+import { InstanceStore } from "@/project/instance-store"
 import { disposeMiddleware } from "./routes/instance/httpapi/lifecycle"
 import { WebSocketTracker } from "./routes/instance/httpapi/websocket-tracker"
 import { PublicApi } from "./routes/instance/httpapi/public"
@@ -25,6 +26,10 @@ export type Listener = {
   // Reload env + harness in place (SIGHUP) without restarting or disposing
   // instances. Runs against this listener's own service context.
   reload: () => Promise<void>
+  // Eagerly boot the workspace instance for a directory — the same
+  // InstanceStore.load the request path awaits lazily — so readiness can be
+  // signaled only once the first real session operation would succeed.
+  warmup: (directory: string) => Promise<void>
 }
 
 type ServerApp = {
@@ -44,6 +49,7 @@ type ListenerState = {
   http: ListenerServer
   websockets: WebSocketTracker.Interface
   reload: () => Promise<void>
+  warmup: (directory: string) => Promise<void>
 }
 type EffectListener = Omit<Listener, "stop"> & {
   stop: (close?: boolean) => Effect.Effect<void>
@@ -82,6 +88,7 @@ export async function listen(opts: ListenOptions): Promise<Listener> {
     url: listener.url,
     stop: (close?: boolean) => Effect.runPromiseExit(listener.stop(close)).then(() => undefined),
     reload: listener.reload,
+    warmup: listener.warmup,
   }
 }
 
@@ -99,6 +106,7 @@ const listenEffect: (opts: ListenOptions) => Effect.Effect<EffectListener, unkno
       url: listenerUrl,
       stop: yield* makeStop(state, unpublishMdns, listenerUrl),
       reload: state.reload,
+      warmup: state.warmup,
     }
   },
 )
@@ -146,6 +154,13 @@ function startListener(opts: ListenOptions, port: number) {
             http: Context.get(ctx, ListenerServerService),
             websockets: Context.get(ctx, WebSocketTracker.Service),
             reload: () => Effect.runPromise(HarnessReload.run.pipe(Effect.provide(appContext))),
+            warmup: (directory: string) =>
+              Effect.runPromise(
+                InstanceStore.Service.use((store) => store.load({ directory })).pipe(
+                  Effect.asVoid,
+                  Effect.provide(appContext),
+                ),
+              ),
           }),
         ),
       ),

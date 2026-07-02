@@ -7,9 +7,28 @@ const os = require("os")
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
 
+// "inherit" only forwards fds 0-2 into the real binary. The s6 readiness
+// notification fd (OPENCODE_SERVER_READY_FD, see `opencode serve`) is an
+// inherited descriptor above 2, so it has to be mapped through explicitly or
+// the server can never signal readiness when launched via this wrapper.
+function stdio() {
+  const raw = process.env.OPENCODE_SERVER_READY_FD
+  const fd = raw ? Number(raw) : NaN
+  if (!Number.isInteger(fd) || fd <= 2) return "inherit"
+  try {
+    fs.fstatSync(fd)
+  } catch {
+    return "inherit"
+  }
+  const entries = ["inherit", "inherit", "inherit"]
+  for (let i = 3; i < fd; i++) entries.push("ignore")
+  entries.push(fd)
+  return entries
+}
+
 function run(target) {
   const child = childProcess.spawn(target, process.argv.slice(2), {
-    stdio: "inherit",
+    stdio: stdio(),
   })
 
   child.on("error", (error) => {

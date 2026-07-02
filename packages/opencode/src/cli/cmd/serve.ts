@@ -1,4 +1,5 @@
-import { Effect } from "effect"
+import { Effect, Schedule } from "effect"
+import { closeSync, writeSync } from "node:fs"
 import { effectCmd } from "../effect-cmd"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -47,6 +48,48 @@ export const ServeCommand = effectCmd({
     }
     yield* Effect.sync(() => process.on("SIGHUP", reload))
 
+    // Readiness: the socket being bound (above) is not enough for the
+    // coordinator — session creation only works once the workspace instance
+    // has booted, which normally happens lazily on the first request. Boot it
+    // eagerly here so the readiness notification below means "the first real
+    // session operation will succeed". A failed boot is evicted from
+    // InstanceStore, so every retry is a real attempt; retries continue with
+    // capped backoff and the supervisor's readiness timeout owns giving up.
+    const warmupDirectory = Flag.OPENCODE_SERVER_WARMUP_DIRECTORY
+    if (warmupDirectory) {
+      yield* Effect.tryPromise(() => server.warmup(warmupDirectory)).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("workspace warmup failed; retrying", { directory: warmupDirectory, error }),
+        ),
+        Effect.retry(Schedule.exponential(250).pipe(Schedule.either(Schedule.spaced(5000)))),
+        Effect.orDie,
+      )
+      console.log(`workspace warmup complete for ${warmupDirectory}`)
+    }
+    yield* Effect.sync(notifyReady)
+
     yield* Effect.never
   }),
 })
+
+// s6 readiness protocol: s6-supervise passes an inherited pipe on the fd
+// declared in the service dir's notification-fd file; writing a newline to it
+// (then closing it) flips the service to ready for s6-svwait -U / s6-rc
+// dependents. Opt-in via env because in a non-supervised launch that fd could
+// be an unrelated inherited descriptor that must not receive stray bytes.
+function notifyReady() {
+  const raw = Flag.OPENCODE_SERVER_READY_FD
+  if (!raw) return
+  const fd = Number(raw)
+  if (!Number.isInteger(fd) || fd <= 2) {
+    console.error(`ignoring invalid OPENCODE_SERVER_READY_FD: ${raw}`)
+    return
+  }
+  try {
+    writeSync(fd, "\n")
+    closeSync(fd)
+    console.log(`readiness signaled on fd ${fd}`)
+  } catch (error) {
+    console.error(`failed to signal readiness on fd ${fd}`, error)
+  }
+}

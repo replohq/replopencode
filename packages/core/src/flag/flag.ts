@@ -35,6 +35,14 @@ export const Flag = {
   OPENCODE_FAKE_VCS: process.env["OPENCODE_FAKE_VCS"],
   OPENCODE_SERVER_PASSWORD: process.env["OPENCODE_SERVER_PASSWORD"],
   OPENCODE_SERVER_USERNAME: process.env["OPENCODE_SERVER_USERNAME"],
+  // s6-style readiness notification: fd number `opencode serve` writes a
+  // newline to (then closes) once the server is ready. Matches the fd declared
+  // in the s6 service dir's notification-fd file.
+  OPENCODE_SERVER_READY_FD: process.env["OPENCODE_SERVER_READY_FD"],
+  // Directory whose workspace instance `opencode serve` boots eagerly at
+  // startup, so readiness covers the first real session operation instead of
+  // just the socket being bound.
+  OPENCODE_SERVER_WARMUP_DIRECTORY: process.env["OPENCODE_SERVER_WARMUP_DIRECTORY"],
   OPENCODE_DISABLE_FFF: fff === undefined ? process.platform === "win32" : truthy("OPENCODE_DISABLE_FFF"),
 
   // Experimental

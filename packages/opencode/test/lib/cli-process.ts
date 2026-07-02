@@ -107,6 +107,10 @@ export type ServeOpts = SpawnOpts & {
   // Default 15s — startup is dominated by bun's transpile + plugin init, not
   // the actual listen() call.
   readonly readyTimeoutMs?: number
+  // Parent fds mapped into the child starting at fd 3 (stdio[3...]). Used by
+  // readiness-notification tests to hand the server a writable fd the way
+  // s6-supervise does.
+  readonly extraFds?: number[]
 }
 
 export type ServeHandle = {
@@ -264,8 +268,7 @@ export function withCliFixture<A, E>(
           Bun.spawn(["bun", "run", "--conditions=browser", cliEntry, ...argv], {
             cwd: home,
             env: { ...process.env, ...env, ...opts?.env },
-            stdout: "pipe",
-            stderr: "pipe",
+            stdio: ["ignore", "pipe", "pipe", ...(opts?.extraFds ?? [])],
           }),
         ),
         (p) =>

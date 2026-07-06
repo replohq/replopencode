@@ -1,5 +1,5 @@
-import { chmod, mkdir, readFile, stat as statFile, writeFile } from "fs/promises"
-import { createWriteStream, existsSync, statSync } from "fs"
+import { access, chmod, mkdir, readFile, stat as statFile, writeFile } from "fs/promises"
+import { createWriteStream, statSync as nodeStatSync } from "fs"
 import { realpathSync } from "fs"
 import { dirname, isAbsolute, join, resolve as pathResolve, win32 } from "path"
 import { Readable } from "stream"
@@ -8,24 +8,27 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { fileURLToPath } from "url"
 
-// Fast sync version for metadata checks
+// Async on purpose: a sync body here blocks the event loop, which is fatal on slow network mounts (REPL-28760).
 export async function exists(p: string): Promise<boolean> {
-  return existsSync(p)
+  return access(p).then(
+    () => true,
+    () => false,
+  )
 }
 
 export async function isDir(p: string): Promise<boolean> {
-  try {
-    return statSync(p).isDirectory()
-  } catch {
-    return false
-  }
+  return statFile(p).then(
+    (s) => s.isDirectory(),
+    () => false,
+  )
 }
 
-export function stat(p: string): ReturnType<typeof statSync> | undefined {
-  return statSync(p, { throwIfNoEntry: false }) ?? undefined
+// Sync on purpose: only for known-local paths (CLI startup probes); anything user-supplied uses statAsync.
+export function statSync(p: string): ReturnType<typeof nodeStatSync> | undefined {
+  return nodeStatSync(p, { throwIfNoEntry: false }) ?? undefined
 }
 
-export async function statAsync(p: string): Promise<ReturnType<typeof statSync> | undefined> {
+export async function statAsync(p: string): Promise<ReturnType<typeof nodeStatSync> | undefined> {
   return statFile(p).catch((e) => {
     if (isEnoent(e)) return undefined
     throw e
@@ -33,7 +36,7 @@ export async function statAsync(p: string): Promise<ReturnType<typeof statSync> 
 }
 
 export async function size(p: string): Promise<number> {
-  const s = stat(p)?.size ?? 0
+  const s = (await statAsync(p))?.size ?? 0
   return typeof s === "bigint" ? Number(s) : s
 }
 
@@ -88,10 +91,7 @@ export async function writeStream(
   stream: ReadableStream<Uint8Array> | Readable,
   mode?: number,
 ): Promise<void> {
-  const dir = dirname(p)
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true })
-  }
+  await mkdir(dirname(p), { recursive: true })
 
   const nodeStream = stream instanceof ReadableStream ? Readable.fromWeb(stream as any) : stream
   const writeStream = createWriteStream(p)

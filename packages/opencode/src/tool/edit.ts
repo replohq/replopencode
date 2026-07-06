@@ -4,7 +4,7 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import * as path from "path"
-import { Effect, Schema, Semaphore } from "effect"
+import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -17,6 +17,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import * as Bom from "@/util/bom"
 
 function normalizeLineEndings(text: string): string {
@@ -32,17 +33,7 @@ function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
   return text.replaceAll("\n", "\r\n")
 }
 
-const locks = new Map<string, Semaphore.Semaphore>()
-
-function lock(filePath: string) {
-  const resolvedFilePath = FSUtil.resolve(filePath)
-  const hit = locks.get(resolvedFilePath)
-  if (hit) return hit
-
-  const next = Semaphore.makeUnsafe(1)
-  locks.set(resolvedFilePath, next)
-  return next
-}
+const locks = KeyedMutex.makeUnsafe<string>()
 
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
@@ -82,10 +73,13 @@ export const EditTool = Tool.define(
             : path.join(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
+          // Canonical key so symlink aliases share one lock, resolved async so a slow mount never blocks the event loop.
+          const lockKey = yield* afs.resolvePath(filePath).pipe(Effect.orDie)
+
           let diff = ""
           let contentOld = ""
           let contentNew = ""
-          yield* lock(filePath).withPermits(1)(
+          yield* locks.withLock(lockKey)(
             Effect.gen(function* () {
               if (params.oldString === "") {
                 const existed = yield* afs.existsSafe(filePath)

@@ -20,6 +20,7 @@ import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { breadcrumb } from "@/util/stall-watchdog"
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -89,7 +90,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
               { args },
             )
-            const result = yield* item.execute(args, ctx)
+            const hint = [args.filePath, args.path, args.pattern].find((v) => typeof v === "string")
+            const drop = breadcrumb(options.toolCallId, item.id, typeof hint === "string" ? hint : "")
+            const result = yield* item.execute(args, ctx).pipe(Effect.ensuring(Effect.sync(drop)))
             const output = {
               ...result,
               attachments: result.attachments?.map((attachment) => ({

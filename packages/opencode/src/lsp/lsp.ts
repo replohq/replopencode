@@ -14,6 +14,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { breadcrumb } from "@/util/stall-watchdog"
 
 export const Event = {
   Updated: EventV2.define({ type: "lsp.updated", schema: {} }),
@@ -343,9 +344,11 @@ export const layer = Layer.effect(
       })
     })
 
+    let touches = 0
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
-      const clients = yield* getClients(input)
+      const drop = breadcrumb(`lsp:${++touches}`, "lsp.root-walk", input)
+      const clients = yield* getClients(input).pipe(Effect.ensuring(Effect.sync(drop)))
       yield* Effect.promise(() =>
         Promise.all(
           clients.map(async (client) => {

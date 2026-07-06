@@ -74,7 +74,7 @@ export const EditTool = Tool.define(
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           // Canonical key so symlink aliases share one lock, resolved async so a slow mount never blocks the event loop.
-          const lockKey = yield* afs.resolvePath(filePath)
+          const lockKey = yield* afs.resolvePath(filePath).pipe(Effect.orDie)
 
           let diff = ""
           let contentOld = ""

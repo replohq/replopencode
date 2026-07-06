@@ -1,21 +1,28 @@
-import { describe, test, expect } from "bun:test"
-import { Effect, Fiber } from "effect"
+import { describe, expect } from "bun:test"
+import { Duration, Effect } from "effect"
+import { it } from "../lib/effect"
 import { breadcrumb, lastStall, stallWatchdog, STALL_THRESHOLD_MS } from "@/util/stall-watchdog"
 
 describe("stall-watchdog", () => {
-  test("breadcrumb registers and disposes", () => {
-    const drop = breadcrumb("t1", "read", "/tmp/x")
-    drop()
-    drop() // idempotent
-  })
+  it.live(
+    "breadcrumb registers and disposes",
+    Effect.sync(() => {
+      const drop = breadcrumb("t1", "read", "/tmp/x")
+      drop()
+      drop() // idempotent
+    }),
+  )
 
-  test("detects a blocked event loop", async () => {
-    const fiber = Effect.runFork(stallWatchdog)
-    await Bun.sleep(300)
-    const end = Date.now() + STALL_THRESHOLD_MS + 400
-    while (Date.now() < end) {} // starve the loop synchronously
-    await Bun.sleep(300)
-    await Effect.runPromise(Fiber.interrupt(fiber))
-    expect(lastStall()?.stallMs).toBeGreaterThan(STALL_THRESHOLD_MS)
-  })
+  it.live(
+    "detects a blocked event loop",
+    Effect.gen(function* () {
+      yield* stallWatchdog.pipe(Effect.forkScoped)
+      yield* Effect.sleep(Duration.millis(300))
+      const end = performance.now() + STALL_THRESHOLD_MS + 400
+      while (performance.now() < end) {} // starve the loop synchronously
+      yield* Effect.sleep(Duration.millis(300))
+      expect(lastStall()?.stallMs).toBeGreaterThan(STALL_THRESHOLD_MS)
+    }),
+    15000,
+  )
 })

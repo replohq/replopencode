@@ -8,7 +8,7 @@ export const STALL_THRESHOLD_MS = 1_000
 const inflight = new Map<string, { op: string; detail: string; startedAt: number }>()
 
 export function breadcrumb(id: string, op: string, detail: string) {
-  inflight.set(id, { op, detail: truncateMiddle(detail, 200), startedAt: Date.now() })
+  inflight.set(id, { op, detail: truncateMiddle(detail, 200), startedAt: performance.now() })
   return () => void inflight.delete(id)
 }
 
@@ -19,18 +19,18 @@ export function lastStall() {
   return last
 }
 
-// Effect.sleep can only wake when the event loop is free, so waking `lag` ms late means the loop was starved that long.
+// Effect.sleep only wakes when the loop is free (waking `lag` ms late = starved that long); monotonic clock, so NTP steps/suspend don't fabricate stalls.
 export const stallWatchdog = Effect.gen(function* () {
   while (true) {
-    const expected = Date.now() + TICK_MS
+    const expected = performance.now() + TICK_MS
     yield* Effect.sleep(Duration.millis(TICK_MS))
-    const now = Date.now()
+    const now = performance.now()
     const lag = now - expected
     if (lag <= STALL_THRESHOLD_MS) continue
-    last = { at: now, stallMs: lag }
+    last = { at: Date.now(), stallMs: lag }
     yield* Effect.logWarning("event-loop.stall", {
-      stall_ms: lag,
-      inflight: [...inflight.values()].map((x) => ({ op: x.op, detail: x.detail, age_ms: now - x.startedAt })),
+      stall_ms: Math.round(lag),
+      inflight: [...inflight.values()].map((x) => ({ op: x.op, detail: x.detail, age_ms: Math.round(now - x.startedAt) })),
     })
   }
 })

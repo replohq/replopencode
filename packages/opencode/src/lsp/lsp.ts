@@ -344,9 +344,10 @@ export const layer = Layer.effect(
       })
     })
 
+    let touches = 0
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
-      const drop = breadcrumb(`lsp:${input}`, "lsp.root-walk", input)
+      const drop = breadcrumb(`lsp:${++touches}`, "lsp.root-walk", input)
       const clients = yield* getClients(input).pipe(Effect.ensuring(Effect.sync(drop)))
       yield* Effect.promise(() =>
         Promise.all(

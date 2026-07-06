@@ -26,7 +26,7 @@ export namespace FSUtil {
   export interface Interface extends FileSystem.FileSystem {
     readonly isDir: (path: string) => Effect.Effect<boolean>
     readonly isFile: (path: string) => Effect.Effect<boolean>
-    readonly resolvePath: (path: string) => Effect.Effect<string>
+    readonly resolvePath: (path: string) => Effect.Effect<string, Error>
     readonly existsSafe: (path: string) => Effect.Effect<boolean>
     readonly readFileStringSafe: (path: string) => Effect.Effect<string | undefined, Error>
     readonly readJson: (path: string) => Effect.Effect<unknown, Error>
@@ -70,10 +70,12 @@ export namespace FSUtil {
         return info?.type === "File"
       })
 
-      // Async twin of FSUtil.resolve: canonicalize when the path exists, else return it resolved as-is.
+      // Async twin of FSUtil.resolve: canonicalize when the path exists, NotFound falls back, other errors propagate.
       const resolvePath = Effect.fn("FileSystem.resolvePath")(function* (p: string) {
         const resolved = pathResolve(windowsPath(p))
-        const real = yield* fs.realPath(resolved).pipe(Effect.catch(() => Effect.succeed(resolved)))
+        const real = yield* fs
+          .realPath(resolved)
+          .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(resolved)))
         return normalizePath(real)
       })
 

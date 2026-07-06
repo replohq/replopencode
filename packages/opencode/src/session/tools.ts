@@ -23,6 +23,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { breadcrumb } from "@/util/stall-watchdog"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -108,7 +109,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
               { args },
             )
-            const result = yield* item.execute(args, ctx)
+            const hint = [args.filePath, args.path, args.pattern].find((v) => typeof v === "string")
+            const drop = breadcrumb(options.toolCallId, item.id, typeof hint === "string" ? hint : "")
+            const result = yield* item.execute(args, ctx).pipe(Effect.ensuring(Effect.sync(drop)))
             const output = {
               ...result,
               attachments: result.attachments?.map((attachment) => ({

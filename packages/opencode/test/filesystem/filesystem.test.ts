@@ -297,6 +297,32 @@ describe("FSUtil", () => {
     )
   })
 
+  describe("resolvePath", () => {
+    it(
+      "resolves symlink aliases to the same canonical path",
+      Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const tmp = yield* fs.makeTempDirectoryScoped()
+        const real = path.join(tmp, "real")
+        yield* fs.makeDirectory(real)
+        yield* fs.writeFileString(path.join(real, "file.txt"), "hello")
+        yield* fs.symlink(real, path.join(tmp, "alias"))
+        const viaAlias = yield* fs.resolvePath(path.join(tmp, "alias", "file.txt"))
+        const viaReal = yield* fs.resolvePath(path.join(real, "file.txt"))
+        expect(viaAlias).toBe(viaReal)
+      }),
+    )
+
+    it(
+      "returns non-existent paths resolved as-is",
+      Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const missing = "/tmp/nonexistent-" + Math.random() + "/file.txt"
+        expect(yield* fs.resolvePath(missing)).toBe(missing)
+      }),
+    )
+  })
+
   describe("pure helpers", () => {
     test("mimeType returns correct types", () => {
       expect(FSUtil.mimeType("file.json")).toBe("application/json")

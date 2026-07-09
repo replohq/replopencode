@@ -161,9 +161,8 @@ interface State {
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
-  // The live headers object each connected remote transport was built with.
-  // The SDK re-reads requestInit.headers on every request, so mutating this
-  // object rotates credentials without reconnecting (see refreshHeaders).
+  // Live headers object each remote transport was built with; the SDK re-reads
+  // requestInit.headers per request, so refreshHeaders can rotate it in place.
   headers: Record<string, Record<string, string>>
 }
 
@@ -265,8 +264,7 @@ export const layer = Layer.effect(
         )
       }
 
-      // Own mutable copy of the configured headers, shared by both transport
-      // candidates: refreshHeaders swaps rotated credentials into it in place.
+      // Owned mutable copy shared by both transports; refreshHeaders rotates it in place
       const headers = mcp.headers ? { ...mcp.headers } : undefined
 
       const transports: Array<{ name: string; transport: TransportWithAuth }> = [
@@ -649,14 +647,11 @@ export const layer = Layer.effect(
 
     /**
      * Swap freshly-resolved config headers into the live remote transports in
-     * place. The MCP SDK re-reads requestInit.headers on every request, so the
-     * next tool call authenticates with rotated credentials — no reconnect, no
-     * tool-list refetch, in-flight calls untouched. Servers added dynamically
-     * via add() keep the headers they were added with.
+     * place, so the next tool call authenticates with rotated credentials —
+     * no reconnect, no tool-list refetch, in-flight calls untouched.
      */
     const refreshHeaders = Effect.fn("MCP.refreshHeaders")(function* () {
-      // Refreshing must never trigger connection setup: an instance that has
-      // not used MCP yet has nothing to refresh.
+      // has() guard: never trigger MCP connection setup from a reload
       if (!(yield* InstanceState.has(state))) return
       const s = yield* InstanceState.get(state)
       const refreshed: string[] = []
@@ -667,7 +662,7 @@ export const layer = Layer.effect(
         Object.assign(live, mcp.headers)
         refreshed.push(name)
       }
-      if (refreshed.length > 0) yield* Effect.logInfo("mcp headers refreshed", { servers: refreshed })
+      if (refreshed.length) yield* Effect.logInfo("mcp headers refreshed", { servers: refreshed })
     })
 
     function requestTimeout(s: State, name: string, configured: McpEntry | undefined, fallback?: number) {

@@ -31,12 +31,10 @@ const emitReloaded = Effect.sync(() =>
  * active sessions keep their already-loaded state and pick up changes on their
  * next access.
  *
- * MCP connections are intentionally NOT torn down here: closing them would
- * break in-flight tool calls, violating the sessions-survive guarantee.
- * Instead, MCP.refreshHeaders swaps freshly-resolved config headers into the
- * live remote transports in place, so the next tool call authenticates with
- * rotated credentials. Structural MCP config changes (URLs, added/removed
- * servers, stdio env) still require a restart.
+ * MCP connections survive reload too — closing them would break in-flight
+ * tool calls. MCP.refreshHeaders instead swaps fresh config headers into the
+ * live remote transports, so the next tool call uses rotated credentials.
+ * Structural MCP config changes (URLs, servers, stdio env) still need a restart.
  */
 export const run = Effect.gen(function* () {
   const reloaded = yield* Effect.sync(() => EnvReload.reload())
@@ -71,8 +69,7 @@ export const run = Effect.gen(function* () {
     { discard: true },
   )
 
-  // Header refresh runs after the invalidations so it re-reads the already
-  // fresh config (incl. rotated MCP credentials from OPENCODE_CONFIG_CONTENT).
+  // After the invalidations, so the refresh re-reads already-fresh config
   const reloadInstance = invalidateAll.pipe(Effect.andThen(mcp.refreshHeaders()))
 
   const dirs = yield* store.directories()

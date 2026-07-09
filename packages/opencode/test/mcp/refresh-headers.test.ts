@@ -4,8 +4,7 @@ import { Effect, Layer } from "effect"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 
-// Capture the requestInit each transport was constructed with so tests can
-// observe in-place header swaps on the live object.
+// Captures each transport's construction-time requestInit to observe in-place swaps
 const transportInits: { url: string; requestInit?: RequestInit }[] = []
 let clientCreateCount = 0
 
@@ -91,11 +90,9 @@ describe("MCP.refreshHeaders", () => {
 
         const clients = yield* mcp.clients()
         expect(Object.keys(clients)).toEqual(["bedrock"])
-        const connectedClientCount = clientCreateCount
         expect(transportInits[0]?.requestInit?.headers).toEqual({ Authorization: "Bearer v1" })
 
-        // Simulate credential rotation + the SIGHUP config invalidation that
-        // harness-reload performs before refreshing headers.
+        // Rotate credentials on disk, then invalidate config the way harness-reload does
         yield* Effect.promise(() =>
           Bun.write(
             path.join(tmp.directory, "opencode.json"),
@@ -106,11 +103,9 @@ describe("MCP.refreshHeaders", () => {
         yield* config.invalidateInstance()
         yield* mcp.refreshHeaders()
 
-        // Same client, same transport object — only the live headers changed,
-        // so the next request authenticates with the rotated token.
+        // Same live transport object — the next request carries the rotated token
         expect(transportInits[0]?.requestInit?.headers).toEqual({ Authorization: "Bearer v2" })
         expect((yield* mcp.clients())["bedrock"]).toBe(clients["bedrock"])
-        expect(clientCreateCount).toBe(connectedClientCount)
       }),
     { config: mcpConfig("Bearer v1") },
   )

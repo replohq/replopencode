@@ -7,6 +7,7 @@ import { Config } from "../../src/config/config"
 import { Agent } from "../../src/agent/agent"
 import { Command } from "../../src/command"
 import { ToolRegistry } from "../../src/tool/registry"
+import { MCP } from "../../src/mcp"
 import { Env } from "../../src/env"
 import { HarnessReload } from "../../src/server/harness-reload"
 import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
@@ -45,6 +46,33 @@ const toolRegistryStub = Layer.succeed(
     invalidate: () => Effect.void,
   }),
 )
+let mcpRefreshCount = 0
+const mcpStub = Layer.succeed(
+  MCP.Service,
+  MCP.Service.of({
+    status: () => Effect.die("stub"),
+    clients: () => Effect.die("stub"),
+    tools: () => Effect.die("stub"),
+    prompts: () => Effect.die("stub"),
+    resources: () => Effect.die("stub"),
+    add: () => Effect.die("stub"),
+    connect: () => Effect.die("stub"),
+    disconnect: () => Effect.die("stub"),
+    refreshHeaders: () =>
+      Effect.sync(() => {
+        mcpRefreshCount++
+      }),
+    getPrompt: () => Effect.die("stub"),
+    readResource: () => Effect.die("stub"),
+    startAuth: () => Effect.die("stub"),
+    authenticate: () => Effect.die("stub"),
+    finishAuth: () => Effect.die("stub"),
+    removeAuth: () => Effect.die("stub"),
+    supportsOAuth: () => Effect.die("stub"),
+    hasStoredTokens: () => Effect.die("stub"),
+    getAuthStatus: () => Effect.die("stub"),
+  }),
+)
 
 const it = testEffect(
   Layer.mergeAll(
@@ -55,6 +83,7 @@ const it = testEffect(
     agentStub,
     commandStub,
     toolRegistryStub,
+    mcpStub,
     testInstanceStoreLayer,
     CrossSpawnSpawner.defaultLayer,
   ),
@@ -81,10 +110,13 @@ describe("HarnessReload.run", () => {
         GlobalBus.on("event", handler)
 
         yield* Effect.promise(() => Bun.write(file, skillMd("hot", "after")))
+        mcpRefreshCount = 0
         yield* HarnessReload.run
         GlobalBus.off("event", handler)
 
         expect((yield* skill.get("hot"))?.description).toBe("after")
+        // Live MCP headers are refreshed (post config invalidation) per instance.
+        expect(mcpRefreshCount).toBe(1)
         expect(events.some((e) => e.payload?.type === "global.reloaded")).toBe(true)
       }),
     ),

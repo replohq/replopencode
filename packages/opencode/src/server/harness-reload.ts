@@ -8,6 +8,7 @@ import { Skill } from "@/skill"
 import { ToolRegistry } from "@/tool/registry"
 import { Env } from "@/env"
 import { Provider } from "@/provider/provider"
+import { MCP } from "@/mcp"
 import { EnvReload } from "./env-reload"
 import { Event } from "./event"
 
@@ -30,10 +31,10 @@ const emitReloaded = Effect.sync(() =>
  * active sessions keep their already-loaded state and pick up changes on their
  * next access.
  *
- * MCP is intentionally NOT invalidated here: its cache holds live server
- * connections, and refreshing them means closing sockets/processes that an
- * in-flight tool call may be using — which would violate the sessions-survive
- * guarantee. MCP config changes still require a restart.
+ * MCP connections survive reload too — closing them would break in-flight
+ * tool calls. MCP.refreshHeaders instead swaps fresh config headers into the
+ * live remote transports, so the next tool call uses rotated credentials.
+ * Structural MCP config changes (URLs, servers, stdio env) still need a restart.
  */
 export const run = Effect.gen(function* () {
   const reloaded = yield* Effect.sync(() => EnvReload.reload())
@@ -47,6 +48,7 @@ export const run = Effect.gen(function* () {
   const command = yield* Command.Service
   const skill = yield* Skill.Service
   const tools = yield* ToolRegistry.Service
+  const mcp = yield* MCP.Service
 
   // Invalidate dependencies before their dependents: env (the process.env
   // snapshot) feeds config; config feeds provider/skill/etc; skill feeds
@@ -67,6 +69,9 @@ export const run = Effect.gen(function* () {
     { discard: true },
   )
 
+  // After the invalidations, so the refresh re-reads already-fresh config
+  const reloadInstance = invalidateAll.pipe(Effect.andThen(mcp.refreshHeaders()))
+
   const dirs = yield* store.directories()
   yield* Effect.forEach(
     dirs,
@@ -74,7 +79,7 @@ export const run = Effect.gen(function* () {
     // abort the batch or suppress the reloaded event below.
     (dir) =>
       store
-        .provide({ directory: dir }, invalidateAll)
+        .provide({ directory: dir }, reloadInstance)
         .pipe(Effect.catchCause((cause) => Effect.logWarning("instance harness reload failed", { dir, cause }))),
     { concurrency: "unbounded", discard: true },
   )

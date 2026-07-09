@@ -129,6 +129,13 @@ interface CreateResult {
   status: Status
   defs?: MCPToolDef[]
   instructions?: string
+  headers?: Record<string, string>
+}
+
+interface ConnectResult {
+  client: MCPClient | undefined
+  status: Status
+  headers?: Record<string, string>
 }
 
 interface AuthResult {
@@ -145,6 +152,9 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  // Live headers object each remote transport was built with; the SDK re-reads
+  // requestInit.headers per request, so refreshHeaders can rotate it in place.
+  headers: Record<string, Record<string, string>>
 }
 
 export interface ServerInstructions {
@@ -174,6 +184,7 @@ export interface Interface {
   readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly refreshHeaders: () => Effect.Effect<void>
   readonly getPrompt: (
     clientName: string,
     name: string,
@@ -242,9 +253,9 @@ const layer = Layer.effect(
       const url = remoteURL(mcp.url)
       if (!url) {
         return {
-          client: undefined as MCPClient | undefined,
+          client: undefined,
           status: { status: "failed" as const, error: `Invalid MCP URL for "${key}"` },
-        }
+        } satisfies ConnectResult
       }
       let authProvider: McpOAuthProvider | undefined
 
@@ -266,19 +277,22 @@ const layer = Layer.effect(
         )
       }
 
+      // Owned mutable copy shared by both transports; refreshHeaders rotates it in place
+      const headers = mcp.headers ? { ...mcp.headers } : undefined
+
       const transports: Array<{ name: string; transport: TransportWithAuth }> = [
         {
           name: "StreamableHTTP",
           transport: new StreamableHTTPClientTransport(url, {
             authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            requestInit: headers ? { headers } : undefined,
           }),
         },
         {
           name: "SSE",
           transport: new SSEClientTransport(url, {
             authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            requestInit: headers ? { headers } : undefined,
           }),
         },
       ]
@@ -326,15 +340,15 @@ const layer = Layer.effect(
             return Effect.void
           }),
         )
-        if (result) return { client: result.client, status: { status: "connected" } as Status }
+        if (result) return { client: result.client, status: { status: "connected" }, headers } satisfies ConnectResult
         // If this was an auth error, stop trying other transports
         if (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration") break
       }
 
       return {
-        client: undefined as MCPClient | undefined,
-        status: (lastStatus ?? { status: "failed", error: "Unknown error" }) as Status,
-      }
+        client: undefined,
+        status: lastStatus ?? { status: "failed", error: "Unknown error" },
+      } satisfies ConnectResult
     })
 
     const connectLocal = Effect.fn("MCP.connectLocal")(function* (
@@ -358,11 +372,11 @@ const layer = Layer.effect(
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       return yield* connectTransport(transport, connectTimeout).pipe(
-        Effect.map((client): { client: MCPClient | undefined; status: Status } => ({
+        Effect.map((client): ConnectResult => ({
           client,
           status: { status: "connected" },
         })),
-        Effect.catch((error): Effect.Effect<{ client: MCPClient | undefined; status: Status }> => {
+        Effect.catch((error): Effect.Effect<ConnectResult> => {
           const msg = error instanceof Error ? error.message : String(error)
           return Effect.succeed({ client: undefined, status: { status: "failed", error: msg } })
         }),
@@ -375,10 +389,13 @@ const layer = Layer.effect(
           return DISABLED_RESULT
         }
 
-        const { client: mcpClient, status } =
-          mcp.type === "remote"
-            ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })
-            : yield* connectLocal(key, mcp as ConfigMCPV1.Info & { type: "local" })
+        const {
+          client: mcpClient,
+          status,
+          headers,
+        } = mcp.type === "remote"
+          ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })
+          : yield* connectLocal(key, mcp as ConfigMCPV1.Info & { type: "local" })
 
         if (!mcpClient) {
           if (status.status !== "connected" && status.status !== "disabled") {
@@ -397,6 +414,7 @@ const layer = Layer.effect(
             status,
             defs: listed,
             instructions: mcpClient.getInstructions()?.trim(),
+            headers,
           } satisfies CreateResult
         }).pipe(
           Effect.catchCause((cause) =>
@@ -445,6 +463,7 @@ const layer = Layer.effect(
         delete s.clients[name]
         delete s.defs[name]
         delete s.instructions[name]
+        delete s.headers[name]
         s.status[name] = { status: "failed", error: "Connection closed" }
         bridge.fork(
           Effect.logWarning("MCP connection closed", { server: name }).pipe(
@@ -500,6 +519,7 @@ const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          headers: {},
         }
 
         yield* Effect.forEach(
@@ -522,6 +542,7 @@ const layer = Layer.effect(
                 s.clients[key] = result.mcpClient
                 s.defs[key] = result.defs!
                 if (result.instructions) s.instructions[key] = result.instructions
+                if (result.headers) s.headers[key] = result.headers
                 watch(s, key, result.mcpClient, bridge, mcp.timeout)
               }
             }),
@@ -534,6 +555,7 @@ const layer = Layer.effect(
             s.clients = {}
             s.defs = {}
             s.instructions = {}
+            s.headers = {}
             yield* Effect.forEach(
               clients,
               (client) =>
@@ -564,6 +586,7 @@ const layer = Layer.effect(
       delete s.clients[name]
       delete s.defs[name]
       delete s.instructions[name]
+      delete s.headers[name]
       if (!client) return Effect.void
       return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
     }
@@ -575,6 +598,7 @@ const layer = Layer.effect(
       listed: MCPToolDef[],
       instructions: string | undefined,
       timeout?: number,
+      headers?: Record<string, string>,
     ) {
       const bridge = yield* EffectBridge.make()
       const previous = s.clients[name]
@@ -583,6 +607,8 @@ const layer = Layer.effect(
       s.defs[name] = listed
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
+      if (headers) s.headers[name] = headers
+      else delete s.headers[name]
       watch(s, name, client, bridge, timeout)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
@@ -635,7 +661,7 @@ const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout, result.headers)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
@@ -656,6 +682,26 @@ const layer = Layer.effect(
       yield* closeClient(s, name)
       delete s.clients[name]
       s.status[name] = { status: "disabled" }
+    })
+
+    /**
+     * Swap freshly-resolved config headers into the live remote transports in
+     * place, so the next tool call authenticates with rotated credentials —
+     * no reconnect, no tool-list refetch, in-flight calls untouched.
+     */
+    const refreshHeaders = Effect.fn("MCP.refreshHeaders")(function* () {
+      // has() guard: never trigger MCP connection setup from a reload
+      if (!(yield* InstanceState.has(state))) return
+      const s = yield* InstanceState.get(state)
+      const refreshed: string[] = []
+      for (const [name, live] of Object.entries(s.headers)) {
+        const mcp = yield* getMcpConfig(name)
+        if (!mcp || mcp.type !== "remote" || !mcp.headers) continue
+        for (const key of Object.keys(live)) delete live[key]
+        Object.assign(live, mcp.headers)
+        refreshed.push(name)
+      }
+      if (refreshed.length) yield* Effect.logInfo("mcp headers refreshed", { servers: refreshed })
     })
 
     function requestTimeout(s: State, name: string, configured: McpEntry | undefined, fallback?: number) {
@@ -980,6 +1026,7 @@ const layer = Layer.effect(
       add,
       connect,
       disconnect,
+      refreshHeaders,
       getPrompt,
       readResource,
       startAuth,

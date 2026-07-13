@@ -387,6 +387,56 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("runs the host metadata effect when a custom tool calls context.metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const customTools = path.join(test.directory, ".opencode", "tools")
+      const pluginTool = pathToFileURL(path.resolve(import.meta.dir, "../../../plugin/src/tool.ts")).href
+      yield* Effect.promise(() => fs.mkdir(customTools, { recursive: true }))
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(customTools, "phased.ts"),
+          [
+            `import { tool } from ${JSON.stringify(pluginTool)}`,
+            "export default tool({",
+            "  description: 'phased tool',",
+            "  args: {},",
+            "  execute: async (_args, context) => {",
+            "    context.metadata({ metadata: { phase: 'build' } })",
+            "    return 'done'",
+            "  },",
+            "})",
+            "",
+          ].join("\n"),
+        ),
+      )
+
+      const registry = yield* ToolRegistry.Service
+      const loaded = (yield* registry.all()).find((tool) => tool.id === "phased")
+      if (!loaded) throw new Error("custom phased tool was not loaded")
+      const agents = yield* Agent.Service
+      const metadataCalls: Array<{ title?: string; metadata?: Record<string, unknown> }> = []
+      const result = yield* loaded.execute({}, {
+        sessionID: SessionID.make("ses_test"),
+        messageID: MessageID.make("msg_test"),
+        agent: (yield* agents.defaultInfo()).name,
+        abort: new AbortController().signal,
+        messages: [],
+        metadata: (val) =>
+          Effect.sync(() => {
+            metadataCalls.push(val)
+          }),
+        ask: () => Effect.void,
+      } satisfies Tool.Context)
+
+      expect(result.output).toBe("done")
+      // The bridge runs the host effect off the plugin's synchronous call;
+      // give the runtime a beat before asserting it actually executed.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)))
+      expect(metadataCalls).toEqual([{ metadata: { phase: "build" } }])
+    }),
+  )
+
   it.instance("loads legacy JSON-schema-shaped custom tools with wire schema", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

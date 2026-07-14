@@ -7,7 +7,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { Tool } from "@/tool/tool"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { Config } from "@/config/config"
 import { Plugin } from "@/plugin"
@@ -431,8 +431,11 @@ describe("tool.registry", () => {
 
       expect(result.output).toBe("done")
       // The bridge runs the host effect off the plugin's synchronous call;
-      // give the runtime a beat before asserting it actually executed.
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 25)))
+      // wait on the recorded call, not wall-clock time.
+      yield* pollWithTimeout(
+        Effect.sync(() => (metadataCalls.length > 0 ? true : undefined)),
+        "metadata effect never ran",
+      )
       expect(metadataCalls).toEqual([{ metadata: { phase: "build" } }])
     }),
   )

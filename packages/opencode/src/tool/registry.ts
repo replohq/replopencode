@@ -138,6 +138,14 @@ export const layer = Layer.effect(
                 const pluginCtx: PluginToolContext = {
                   ...toolCtx,
                   ask: (req) => bridge.promise(toolCtx.ask(req)),
+                  // NOTE (Cole, 2026-07-14, REPL-27972): the host `metadata` is a lazy
+                  // Effect; spread through raw, a plugin call constructs it and drops
+                  // it — a silent no-op. Run it via the bridge; failures are swallowed
+                  // because part-metadata updates are display-only and the host logs
+                  // its own update errors.
+                  metadata: (input) => {
+                    void bridge.promise(toolCtx.metadata(input)).catch(() => {})
+                  },
                   directory: ctx.directory,
                   worktree: ctx.worktree,
                 }

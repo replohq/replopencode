@@ -59,7 +59,7 @@ function forkStderrDrain(stream: ReadableStream<Uint8Array>, into: string[]) {
   )
 }
 
-function isolatedEnv(home: string, configJson: string): Record<string, string> {
+export function isolatedEnv(home: string, configJson: string): Record<string, string> {
   return {
     OPENCODE_TEST_HOME: home,
     HOME: home,

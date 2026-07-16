@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { effectCmd } from "../effect-cmd"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { SighupBootGuard } from "../sighup-boot-guard"
 
 export const ServeCommand = effectCmd({
   command: "serve",
@@ -45,7 +46,7 @@ export const ServeCommand = effectCmd({
           }
         })
     }
-    yield* Effect.sync(() => process.on("SIGHUP", reload))
+    yield* Effect.sync(() => SighupBootGuard.handover(reload))
 
     yield* Effect.never
   }),

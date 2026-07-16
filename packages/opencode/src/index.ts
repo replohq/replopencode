@@ -1,3 +1,5 @@
+// MUST stay the first import: arms the `serve` SIGHUP boot guard before the rest of the graph evaluates.
+import "./cli/sighup-boot-guard"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"

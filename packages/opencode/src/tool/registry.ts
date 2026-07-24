@@ -30,6 +30,7 @@ import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
+import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
@@ -187,7 +188,14 @@ export const layer = Layer.effect(
           const namespace = path.basename(match, path.extname(match))
           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
           // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+          // Resolve symlinks with a fresh lookup before importing: a tools dir can be
+          // swapped behind a versioned symlink while we're running (Replo harness
+          // upgrades), and the module loader's cached symlink resolution would import
+          // new files from the old, deleted target. The resolved path changes with the
+          // target dir, so it doubles as the cache key that lets invalidate() pick up
+          // updated tool code without a process restart.
+          const real = yield* Effect.promise(() => fs.realpath(match))
+          const mod = yield* Effect.promise(() => import(pathToFileURL(real).href))
           for (const [id, def] of Object.entries(mod)) {
             if (!isPluginTool(def)) continue
             custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))

@@ -384,6 +384,8 @@ describe("tool.registry", () => {
       yield* Effect.promise(() => fs.mkdir(v2, { recursive: true }))
       yield* Effect.promise(() => Bun.write(path.join(v2, "echo.ts"), toolSource("echo v2")))
       yield* Effect.promise(() => Bun.write(path.join(v2, "added.ts"), toolSource("added in v2")))
+      // unlink+symlink is deliberately harsher than production, where the upgrader
+      // flips via staged-symlink + rename(2) and the link never transiently vanishes.
       yield* Effect.promise(() => fs.unlink(path.join(opencode, "tools")))
       yield* Effect.promise(() => fs.symlink("tools-v2", path.join(opencode, "tools")))
       yield* Effect.promise(() => fs.rm(v1, { recursive: true, force: true }))

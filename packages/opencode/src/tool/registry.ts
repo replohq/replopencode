@@ -88,6 +88,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
+    const fsutil = yield* FSUtil.Service
     const plugin = yield* Plugin.Service
     const agents = yield* Agent.Service
     const truncate = yield* Truncate.Service
@@ -193,7 +194,18 @@ const layer = Layer.effect(
           const namespace = path.basename(match, path.extname(match))
           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
           // Import it as `file://` so Node on Windows accepts the dynamic import.
-          const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+          // Resolve symlinks with a fresh lookup before importing: a tools dir can be
+          // swapped behind a versioned symlink while we're running (Replo harness
+          // upgrades), and the module loader's cached symlink resolution would import
+          // new files from the old, deleted target. The resolved path changes with the
+          // target dir, so it doubles as the cache key that lets invalidate() pick up
+          // updated tool code without a process restart.
+          // orDie, no fallback: if resolution fails, fail the load loudly — falling
+          // back to the unresolved path would hand the import to a possibly-stale
+          // cached resolution, which is the exact bug this exists to prevent. The
+          // next load (invalidate or turn) retries.
+          const real = yield* fsutil.realPath(match).pipe(Effect.orDie)
+          const mod = yield* Effect.promise(() => import(pathToFileURL(real).href))
           for (const [id, def] of Object.entries(mod)) {
             if (!isPluginTool(def)) continue
             custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))

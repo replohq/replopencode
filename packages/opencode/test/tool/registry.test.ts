@@ -350,6 +350,55 @@ describe("tool.registry", () => {
     }),
   )
 
+  // Regression for the Replo harness-upgrade wedge: the tools dir is a versioned
+  // symlink (`tools` -> `tools-<sha>`); an upgrade writes a new target, flips the
+  // symlink, deletes the old target, then reloads in place. The scan sees the new
+  // file list, but the module loader's cached symlink resolution imported new files
+  // from the deleted old target, killing every session with "Cannot find module".
+  it.instance("re-resolves a symlinked tools dir on invalidate (versioned-dir flip)", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const opencode = path.join(test.directory, ".opencode")
+      const pluginTool = pathToFileURL(path.resolve(import.meta.dir, "../../../plugin/src/tool.ts")).href
+      const toolSource = (description: string) =>
+        [
+          `import { tool } from ${JSON.stringify(pluginTool)}`,
+          "export default tool({",
+          `  description: ${JSON.stringify(description)},`,
+          "  args: { value: tool.schema.string().describe('input') },",
+          "  execute: async ({ value }) => value,",
+          "})",
+          "",
+        ].join("\n")
+
+      const v1 = path.join(opencode, "tools-v1")
+      yield* Effect.promise(() => fs.mkdir(v1, { recursive: true }))
+      yield* Effect.promise(() => Bun.write(path.join(v1, "echo.ts"), toolSource("echo v1")))
+      yield* Effect.promise(() => fs.symlink("tools-v1", path.join(opencode, "tools")))
+
+      const registry = yield* ToolRegistry.Service
+      const first = yield* registry.all()
+      if (!first.find((tool) => tool.id === "echo")) throw new Error("echo tool was not loaded from v1")
+
+      const v2 = path.join(opencode, "tools-v2")
+      yield* Effect.promise(() => fs.mkdir(v2, { recursive: true }))
+      yield* Effect.promise(() => Bun.write(path.join(v2, "echo.ts"), toolSource("echo v2")))
+      yield* Effect.promise(() => Bun.write(path.join(v2, "added.ts"), toolSource("added in v2")))
+      // unlink+symlink is deliberately harsher than production, where the upgrader
+      // flips via staged-symlink + rename(2) and the link never transiently vanishes.
+      yield* Effect.promise(() => fs.unlink(path.join(opencode, "tools")))
+      yield* Effect.promise(() => fs.symlink("tools-v2", path.join(opencode, "tools")))
+      yield* Effect.promise(() => fs.rm(v1, { recursive: true, force: true }))
+
+      yield* registry.invalidate()
+      const reloaded = yield* registry.all()
+      if (!reloaded.find((tool) => tool.id === "added")) {
+        throw new Error("added tool was not loaded after the symlink flip")
+      }
+      expect(reloaded.find((tool) => tool.id === "echo")?.description).toBe("echo v2")
+    }),
+  )
+
   it.instance(
     "preserves Zod arg descriptions from older config-scoped plugin packages",
     () =>

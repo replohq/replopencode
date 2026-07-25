@@ -30,7 +30,6 @@ import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
-import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
@@ -86,6 +85,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
+    const fsutil = yield* FSUtil.Service
     const plugin = yield* Plugin.Service
     const agents = yield* Agent.Service
     const truncate = yield* Truncate.Service
@@ -194,7 +194,11 @@ export const layer = Layer.effect(
           // new files from the old, deleted target. The resolved path changes with the
           // target dir, so it doubles as the cache key that lets invalidate() pick up
           // updated tool code without a process restart.
-          const real = yield* Effect.promise(() => fs.realpath(match))
+          // orDie, no fallback: if resolution fails, fail the load loudly — falling
+          // back to the unresolved path would hand the import to a possibly-stale
+          // cached resolution, which is the exact bug this exists to prevent. The
+          // next load (invalidate or turn) retries.
+          const real = yield* fsutil.realPath(match).pipe(Effect.orDie)
           const mod = yield* Effect.promise(() => import(pathToFileURL(real).href))
           for (const [id, def] of Object.entries(mod)) {
             if (!isPluginTool(def)) continue

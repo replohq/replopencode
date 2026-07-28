@@ -3,6 +3,7 @@
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
+- Shipping a change to users means cutting a release by hand — there is no CI release path in this fork. Read `RELEASING.md` before tagging, building, or uploading release assets.
 
 ## Branch Names
 

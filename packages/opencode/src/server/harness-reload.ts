@@ -9,6 +9,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Env } from "@/env"
 import { Provider } from "@/provider/provider"
 import { MCP } from "@/mcp"
+import { Plugin } from "@/plugin"
 import { EnvReload } from "./env-reload"
 import { Event } from "./event"
 
@@ -35,6 +36,8 @@ const emitReloaded = Effect.sync(() =>
  * tool calls. MCP.refreshHeaders instead swaps fresh config headers into the
  * live remote transports, so the next tool call uses rotated credentials.
  * Structural MCP config changes (URLs, servers, stdio env) still need a restart.
+ *
+ * Plugins survive reload unless their resolved set changed (Plugin.reload); dispose runs on the replaced hooks.
  */
 export const run = Effect.gen(function* () {
   const reloaded = yield* Effect.sync(() => EnvReload.reload())
@@ -49,6 +52,7 @@ export const run = Effect.gen(function* () {
   const skill = yield* Skill.Service
   const tools = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
+  const plugin = yield* Plugin.Service
 
   // Invalidate dependencies before their dependents: env (the process.env
   // snapshot) feeds config; config feeds provider/skill/etc; skill feeds
@@ -69,8 +73,8 @@ export const run = Effect.gen(function* () {
     { discard: true },
   )
 
-  // After the invalidations, so the refresh re-reads already-fresh config
-  const reloadInstance = invalidateAll.pipe(Effect.andThen(mcp.refreshHeaders()))
+  // After the invalidations so both re-read already-fresh config; plugin.reload before any dependent rebuild.
+  const reloadInstance = invalidateAll.pipe(Effect.andThen(plugin.reload()), Effect.andThen(mcp.refreshHeaders()))
 
   const dirs = yield* store.directories()
   yield* Effect.forEach(

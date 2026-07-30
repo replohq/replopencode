@@ -25,7 +25,10 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
-import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
+import { isPathPluginSpec, parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
+import { ConfigPlugin } from "@/config/plugin"
+import { fileURLToPath } from "url"
+import fs from "fs/promises"
 import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -34,6 +37,21 @@ import { InstallationChannel } from "@opencode-ai/core/installation/version"
 
 type State = {
   hooks: Hooks[]
+  fingerprint: string
+}
+
+// Specs + fresh realpath of path targets: behind a versioned-dir symlink the realpath is a content hash — changes when plugin code changes, stable across env rotations.
+async function fingerprint(origins: ConfigPlugin.Origin[]) {
+  const parts = await Promise.all(
+    origins.map(async (origin) => {
+      const spec = ConfigPlugin.pluginSpecifier(origin.spec)
+      if (!isPathPluginSpec(spec)) return spec
+      const file = spec.startsWith("file://") ? fileURLToPath(spec) : spec
+      const real = await fs.realpath(file).catch(() => file)
+      return `${spec} -> ${real}`
+    }),
+  )
+  return parts.sort().join("\n")
 }
 
 // Hook names that follow the (input, output) => Promise<void> trigger pattern
@@ -53,6 +71,7 @@ export interface Interface {
   ) => Effect.Effect<Output>
   readonly list: () => Effect.Effect<Hooks[]>
   readonly init: () => Effect.Effect<void>
+  readonly reload: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Plugin") {}
@@ -273,7 +292,7 @@ const layer = Layer.effect(
           ),
         )
 
-        return { hooks }
+        return { hooks, fingerprint: yield* Effect.promise(() => fingerprint(plugins)) }
       }),
     )
 
@@ -301,7 +320,19 @@ const layer = Layer.effect(
       yield* InstanceState.get(state)
     })
 
-    return Service.of({ trigger, list, init })
+    // Drop loaded plugins only when the resolved set changed — env-rotation reloads must not re-instantiate stateful hooks.
+    const reload = Effect.fn("Plugin.reload")(function* () {
+      if (!(yield* InstanceState.has(state))) return
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* config.get()
+      const origins = flags.pure ? [] : (cfg.plugin_origins ?? [])
+      const next = yield* Effect.promise(() => fingerprint(origins))
+      if (next === s.fingerprint) return
+      yield* Effect.logInfo("plugin set changed, reloading plugins")
+      yield* InstanceState.invalidate(state)
+    })
+
+    return Service.of({ trigger, list, init, reload })
   }),
 )
 

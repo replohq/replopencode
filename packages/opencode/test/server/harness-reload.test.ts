@@ -8,6 +8,7 @@ import { Agent } from "../../src/agent/agent"
 import { Command } from "../../src/command"
 import { ToolRegistry } from "../../src/tool/registry"
 import { MCP } from "../../src/mcp"
+import { Plugin } from "../../src/plugin/index"
 import { Env } from "../../src/env"
 import { HarnessReload } from "../../src/server/harness-reload"
 import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
@@ -44,6 +45,20 @@ const toolRegistryStub = Layer.succeed(
     named: () => Effect.die("stub"),
     tools: () => Effect.succeed([]),
     invalidate: () => Effect.void,
+  }),
+)
+let pluginReloadCount = 0
+const pluginStub = Layer.succeed(
+  Plugin.Service,
+  Plugin.Service.of({
+    init: () => Effect.void,
+    trigger: ((_name: unknown, _input: unknown, output: unknown) =>
+      Effect.succeed(output)) as Plugin.Interface["trigger"],
+    list: () => Effect.succeed([]),
+    reload: () =>
+      Effect.sync(() => {
+        pluginReloadCount++
+      }),
   }),
 )
 let mcpRefreshCount = 0
@@ -83,6 +98,7 @@ const it = testEffect(
     agentStub,
     commandStub,
     toolRegistryStub,
+    pluginStub,
     mcpStub,
     testInstanceStoreLayer,
     CrossSpawnSpawner.defaultLayer,
@@ -111,12 +127,14 @@ describe("HarnessReload.run", () => {
 
         yield* Effect.promise(() => Bun.write(file, skillMd("hot", "after")))
         mcpRefreshCount = 0
+        pluginReloadCount = 0
         yield* HarnessReload.run
         GlobalBus.off("event", handler)
 
         expect((yield* skill.get("hot"))?.description).toBe("after")
-        // Live MCP headers are refreshed (post config invalidation) per instance.
+        // Live MCP headers refreshed and plugin set rechecked (post config invalidation) per instance.
         expect(mcpRefreshCount).toBe(1)
+        expect(pluginReloadCount).toBe(1)
         expect(events.some((e) => e.payload?.type === "global.reloaded")).toBe(true)
       }),
     ),

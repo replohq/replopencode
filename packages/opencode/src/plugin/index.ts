@@ -40,18 +40,20 @@ type State = {
   fingerprint: string
 }
 
-// Specs + fresh realpath of path targets: behind a versioned-dir symlink the realpath is a content hash — changes when plugin code changes, stable across env rotations.
+// Specs + options + fresh realpath of path targets: behind a versioned-dir symlink the realpath is a content hash — changes when plugin code changes, stable across env rotations.
+// Order-sensitive on purpose: hooks register and trigger in config order, so a reorder is a real change.
 async function fingerprint(origins: ConfigPlugin.Origin[]) {
   const parts = await Promise.all(
     origins.map(async (origin) => {
       const spec = ConfigPlugin.pluginSpecifier(origin.spec)
-      if (!isPathPluginSpec(spec)) return spec
+      const options = JSON.stringify(ConfigPlugin.pluginOptions(origin.spec) ?? null)
+      if (!isPathPluginSpec(spec)) return `${spec} ${options}`
       const file = spec.startsWith("file://") ? fileURLToPath(spec) : spec
       const real = await fs.realpath(file).catch(() => file)
-      return `${spec} -> ${real}`
+      return `${spec} ${options} -> ${real}`
     }),
   )
-  return parts.sort().join("\n")
+  return parts.join("\n")
 }
 
 // Hook names that follow the (input, output) => Promise<void> trigger pattern

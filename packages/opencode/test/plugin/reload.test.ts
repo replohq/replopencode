@@ -37,6 +37,8 @@ const it = testEffect(
       Layer.provide(configLayer),
       Layer.provide(RuntimeFlags.layer({ disableDefaultPlugins: true })),
     ),
+    // Exposed so tests can invalidate the (memoized, shared) config cache after rewriting opencode.json.
+    configLayer,
     CrossSpawnSpawner.defaultLayer,
   ),
 )
@@ -144,4 +146,51 @@ describe("plugin.reload", () => {
       }),
     ),
   )
+
+  it.instance("reloads when plugin order changes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      for (const tag of ["a", "b"])
+        yield* Effect.promise(() => Bun.write(path.join(test.directory, `${tag}.ts`), pluginSource(tag, test.directory)))
+      const specs = ["a", "b"].map((tag) => pathToFileURL(path.join(test.directory, `${tag}.ts`)).href)
+      yield* writePluginConfig(test.directory, specs)
+      // Hooks unshift their tag, so trigger order [a, b] yields ["b", "a"].
+      expect(yield* triggerSystemTransform()).toEqual(["b", "a"])
+
+      yield* writePluginConfig(test.directory, [specs[1]!, specs[0]!])
+      yield* invalidateConfig()
+      const plugin = yield* Plugin.Service
+      yield* plugin.reload()
+      expect(yield* triggerSystemTransform()).toEqual(["a", "b"])
+    }),
+  )
+
+  it.instance("reloads when plugin options change", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "hook.ts"), pluginSource("v1", test.directory)))
+      const spec = pathToFileURL(path.join(test.directory, "hook.ts")).href
+      yield* writePluginConfig(test.directory, [[spec, { flag: "one" }]])
+      const plugin = yield* Plugin.Service
+      const before = yield* plugin.list()
+
+      yield* writePluginConfig(test.directory, [[spec, { flag: "two" }]])
+      yield* invalidateConfig()
+      yield* plugin.reload()
+      expect(yield* plugin.list()).not.toBe(before)
+      expect(yield* markerExists(test.directory, "disposed-v1.txt")).toBe(true)
+    }),
+  )
 })
+
+function writePluginConfig(dir: string, plugin: unknown[]) {
+  return Effect.promise(() =>
+    Bun.write(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin }, null, 2),
+    ),
+  )
+}
+
+const invalidateConfig = () =>
+  Config.Service.use((svc) => svc.invalidate().pipe(Effect.andThen(svc.invalidateInstance())))

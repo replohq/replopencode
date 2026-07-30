@@ -5,7 +5,10 @@ const ignore = () => {
 
 // Arms at import time — index.ts's first import — so the whole module graph is covered; argv[2] is the subcommand for both `bun entry.ts serve` and the compiled binary.
 // Help/version invocations never boot the server: skip them so guard logs stay out of `serve --help` output.
-if (process.argv[2] === "serve" && !process.argv.some((a) => a === "--help" || a === "-h" || a === "--version")) {
+if (
+  process.argv[2] === "serve" &&
+  !process.argv.some((a) => a === "--help" || a === "-h" || a === "--version" || a === "-v")
+) {
   process.on("SIGHUP", ignore)
   console.error("[sighup-guard] armed: SIGHUP is ignored until the server is listening")
 }

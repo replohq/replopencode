@@ -1,0 +1,58 @@
+# Fork CI. The inherited upstream workflows (test.yml, typecheck.yml, ...) all
+# target blacksmith-* self-hosted runners this fork does not have, so they never
+# run. This is the fork's own gate on GitHub-hosted runners, scoped to
+# packages/opencode — where every fork patch lands.
+name: fork-ci
+
+on:
+  push:
+    branches: [dev, fork-ci]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Typecheck
+        run: bun typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "bot@opencode.ai"
+          git config --global user.name "opencode"
+
+      - name: Test packages/opencode
+        working-directory: packages/opencode
+        run: bun run test
+
+      - name: HttpApi exerciser gates
+        working-directory: packages/opencode
+        run: bun run test:httpapi

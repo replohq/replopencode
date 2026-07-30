@@ -29,8 +29,6 @@ jobs:
         settings:
           - name: linux
             host: blacksmith-4vcpu-ubuntu-2404
-          - name: windows
-            host: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -67,7 +65,7 @@ jobs:
         timeout-minutes: 20
         run: GITHUB_ACTIONS=false bun turbo test
         env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
 
       - name: Check generated client
         if: runner.os == 'Linux'
@@ -75,7 +73,6 @@ jobs:
         run: bun run check:generated
 
       - name: Run HttpApi exerciser gates
-        if: runner.os == 'Linux'
         working-directory: packages/opencode
         run: bun run test:httpapi
 
@@ -87,8 +84,6 @@ jobs:
         settings:
           - name: linux
             host: blacksmith-4vcpu-ubuntu-2404
-          - name: windows
-            host: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
@@ -124,7 +119,6 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.playwright-version.outputs.version }}-chromium
 
       - name: Install Playwright system dependencies
-        if: runner.os == 'Linux'
         working-directory: packages/app
         run: bunx playwright install-deps chromium
 

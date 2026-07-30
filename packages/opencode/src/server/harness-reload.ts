@@ -64,6 +64,10 @@ export const run = Effect.gen(function* () {
       env.invalidate(),
       config.invalidate(),
       config.invalidateInstance(),
+      // Re-reads the just-invalidated config; must precede tools.invalidate()
+      // so a concurrent request can never cache a tool registry built from the
+      // stale plugin set after the registry was already cleared.
+      plugin.reload(),
       skill.invalidate(),
       provider.invalidate(),
       agent.invalidate(),
@@ -73,8 +77,8 @@ export const run = Effect.gen(function* () {
     { discard: true },
   )
 
-  // After the invalidations so both re-read already-fresh config; plugin.reload before any dependent rebuild.
-  const reloadInstance = invalidateAll.pipe(Effect.andThen(plugin.reload()), Effect.andThen(mcp.refreshHeaders()))
+  // After the invalidations so the header swap reads already-fresh config.
+  const reloadInstance = invalidateAll.pipe(Effect.andThen(mcp.refreshHeaders()))
 
   const dirs = yield* store.directories()
   yield* Effect.forEach(

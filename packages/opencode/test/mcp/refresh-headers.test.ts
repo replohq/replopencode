@@ -11,12 +11,10 @@ import { TestInstance } from "../fixture/fixture"
 import { MCP } from "../../src/mcp/index"
 import { Config } from "../../src/config/config"
 
-// One compiled graph exposes the SAME Config instance MCP reads internally, so
-// the test can invalidate it the way harness-reload does in production.
+// One compiled graph so the test invalidates the same Config instance MCP reads internally.
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([MCP.node, Config.node])))
 
-// Real MCP server over streamable HTTP (mirrors headers.test.ts); captures the
-// headers of every request so the test can observe in-place credential swaps.
+// Real MCP server over streamable HTTP (mirrors headers.test.ts); records each request's headers.
 const serve = Effect.acquireRelease(
   Effect.promise(async () => {
     const requests: Headers[] = []
@@ -47,8 +45,7 @@ const serve = Effect.acquireRelease(
   (server) => Effect.promise(server.close),
 )
 
-// Config-file-driven server (the production shape — refreshHeaders re-reads
-// rotated headers from config, and add()-registered servers bypass that path).
+// Config-file-driven server (production shape): add()-registered servers bypass refreshHeaders' config re-read.
 function opencodeJson(url: string, token: string) {
   return JSON.stringify({
     $schema: "https://opencode.ai/config.json",
@@ -68,8 +65,7 @@ describe("MCP.refreshHeaders", () => {
       const mcp = yield* MCP.Service
       const config = yield* Config.Service
 
-      // The server URL is only known at runtime: write opencode.json now and
-      // invalidate so the first MCP access reads it fresh.
+      // Server URL is only known at runtime: write config now, invalidate so first access reads it fresh.
       yield* Effect.promise(() =>
         Bun.write(path.join(tmp.directory, "opencode.json"), opencodeJson(server.url, "Bearer v1")),
       )
@@ -89,8 +85,7 @@ describe("MCP.refreshHeaders", () => {
       yield* config.invalidateInstance()
       yield* mcp.refreshHeaders()
 
-      // The next request rides the SAME live transport — no reconnect — and
-      // carries the rotated token on the wire.
+      // Next request rides the same live transport (no reconnect) with the rotated token.
       const requestsBefore = server.requests.length
       yield* mcp.prompts()
       expect(server.requests.length).toBeGreaterThan(requestsBefore)

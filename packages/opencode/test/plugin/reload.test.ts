@@ -21,8 +21,7 @@ import { NpmTest } from "../fake/npm"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-// Config.node is in the group so tests resolve the same (memoized, shared) config
-// instance Plugin reads, and can invalidate it after rewriting opencode.json.
+// Config.node in the group: tests invalidate the same shared config instance Plugin reads.
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Plugin.node, Config.node, CrossSpawnSpawner.node]), [
     [Auth.node, AuthTest.empty],

@@ -365,7 +365,7 @@ export const RunCommand = effectCmd({
             process.exit(1)
           }
 
-          const stat = Filesystem.stat(resolvedPath)
+          const stat = Filesystem.statSync(resolvedPath)
           const isDirectory = stat?.isDirectory() ?? false
           if (args.attach && isDirectory) {
             UI.error(`Cannot attach local directory without a shared filesystem: ${filePath}`)

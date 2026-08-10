@@ -37,6 +37,9 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
     getServerCapabilities() {
       return {}
     }
+    getInstructions() {
+      return undefined
+    }
     async close() {}
   },
 }))
@@ -49,22 +52,12 @@ beforeEach(() => {
 // Import modules after mocking
 const { MCP } = await import("../../src/mcp/index")
 const { Config } = await import("../../src/config/config")
-const { McpAuth } = await import("../../src/mcp/auth")
-const { EventV2Bridge } = await import("../../src/event-v2-bridge")
-const { FSUtil } = await import("@opencode-ai/core/fs-util")
-const { CrossSpawnSpawner } = await import("@opencode-ai/core/cross-spawn-spawner")
+const { AppNodeBuilder } = await import("@opencode-ai/core/effect/app-node-builder")
+const { LayerNode } = await import("@opencode-ai/core/effect/layer-node")
 
-// provideMerge exposes the SAME Config instance MCP reads internally, so the
-// test can invalidate it the way harness-reload does in production.
-const it = testEffect(
-  MCP.layer.pipe(
-    Layer.provide(McpAuth.defaultLayer),
-    Layer.provide(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(Config.defaultLayer),
-    Layer.provide(CrossSpawnSpawner.defaultLayer),
-    Layer.provide(FSUtil.defaultLayer),
-  ),
-)
+// One compiled graph exposes the SAME Config instance MCP reads internally, so
+// the test can invalidate it the way harness-reload does in production.
+const it = testEffect(AppNodeBuilder.build(LayerNode.group([MCP.node, Config.node])))
 
 function mcpConfig(token: string) {
   return {

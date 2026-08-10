@@ -1,15 +1,15 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { Npm } from "@opencode-ai/core/npm"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import fs from "fs/promises"
 import path from "path"
 import { pathToFileURL } from "url"
-import { EventV2Bridge } from "../../src/event-v2-bridge"
+import { Account } from "../../src/account/account"
+import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
-import { Env } from "../../src/env"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Plugin } from "../../src/plugin/index"
 
@@ -21,26 +21,15 @@ import { NpmTest } from "../fake/npm"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-const configLayer = Config.layer.pipe(
-  Layer.provide(EffectFlock.defaultLayer),
-  Layer.provide(FSUtil.defaultLayer),
-  Layer.provide(Env.defaultLayer),
-  Layer.provide(AuthTest.empty),
-  Layer.provide(AccountTest.empty),
-  Layer.provide(NpmTest.noop),
-  Layer.provide(FetchHttpClient.layer),
-)
+// Config.node is in the group so tests resolve the same (memoized, shared) config
+// instance Plugin reads, and can invalidate it after rewriting opencode.json.
 const it = testEffect(
-  Layer.mergeAll(
-    Plugin.layer.pipe(
-      Layer.provide(EventV2Bridge.defaultLayer),
-      Layer.provide(configLayer),
-      Layer.provide(RuntimeFlags.layer({ disableDefaultPlugins: true })),
-    ),
-    // Exposed so tests can invalidate the (memoized, shared) config cache after rewriting opencode.json.
-    configLayer,
-    CrossSpawnSpawner.defaultLayer,
-  ),
+  AppNodeBuilder.build(LayerNode.group([Plugin.node, Config.node, CrossSpawnSpawner.node]), [
+    [Auth.node, AuthTest.empty],
+    [Account.node, AccountTest.empty],
+    [Npm.node, NpmTest.noop],
+    [RuntimeFlags.node, RuntimeFlags.layer({ disableDefaultPlugins: true })],
+  ]),
 )
 const systemHook = "experimental.chat.system.transform"
 

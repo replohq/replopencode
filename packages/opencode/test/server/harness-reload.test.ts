@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import path from "path"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Skill } from "../../src/skill"
 import { Config } from "../../src/config/config"
 import { Agent } from "../../src/agent/agent"
@@ -67,9 +68,11 @@ const mcpStub = Layer.succeed(
   MCP.Service.of({
     status: () => Effect.die("stub"),
     clients: () => Effect.die("stub"),
+    instructions: () => Effect.die("stub"),
     tools: () => Effect.die("stub"),
     prompts: () => Effect.die("stub"),
     resources: () => Effect.die("stub"),
+    resourceTemplates: () => Effect.die("stub"),
     add: () => Effect.die("stub"),
     connect: () => Effect.die("stub"),
     disconnect: () => Effect.die("stub"),
@@ -91,9 +94,7 @@ const mcpStub = Layer.succeed(
 
 const it = testEffect(
   Layer.mergeAll(
-    Skill.defaultLayer,
-    Config.defaultLayer,
-    Env.defaultLayer,
+    LayerNode.compile(LayerNode.group([Skill.node, Config.node, Env.node])),
     ProviderTest.fake().layer,
     agentStub,
     commandStub,
@@ -101,7 +102,7 @@ const it = testEffect(
     pluginStub,
     mcpStub,
     testInstanceStoreLayer,
-    CrossSpawnSpawner.defaultLayer,
+    LayerNode.compile(CrossSpawnSpawner.node),
   ),
 )
 

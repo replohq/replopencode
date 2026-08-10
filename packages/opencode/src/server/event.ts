@@ -1,15 +1,13 @@
 import { Schema } from "effect"
+import { Event as SchemaEvent } from "@opencode-ai/schema/event"
 import { ServerEvent } from "@opencode-ai/schema/server-event"
 
-<<<<<<< dev
+// Reloaded is fork-only (SIGHUP harness reload); non-durable, so it stays out
+// of the schema package's durable-event manifests.
 export const Event = {
-  Connected: EventV2.define({ type: "server.connected", schema: {} }),
-  Disposed: EventV2.define({ type: "global.disposed", schema: {} }),
-  Reloaded: EventV2.define({ type: "global.reloaded", schema: {} }),
+  ...ServerEvent,
+  Reloaded: SchemaEvent.define({ type: "global.reloaded", schema: {} }),
 }
-=======
-export const Event = ServerEvent
->>>>>>> v1.17.14
 
 export const InstanceDisposed = Schema.Struct({
   id: Schema.String,

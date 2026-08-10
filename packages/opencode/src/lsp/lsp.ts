@@ -13,11 +13,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-<<<<<<< dev
-import { breadcrumb } from "@/util/stall-watchdog"
-=======
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
->>>>>>> v1.17.14
+import { breadcrumb } from "@/util/stall-watchdog"
 
 export const Event = LspEvent
 

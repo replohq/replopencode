@@ -128,7 +128,7 @@ interface CreateResult {
   mcpClient?: MCPClient
   status: Status
   defs?: MCPToolDef[]
-<<<<<<< dev
+  instructions?: string
   headers?: Record<string, string>
 }
 
@@ -136,9 +136,6 @@ interface ConnectResult {
   client: MCPClient | undefined
   status: Status
   headers?: Record<string, string>
-=======
-  instructions?: string
->>>>>>> v1.17.14
 }
 
 interface AuthResult {
@@ -154,12 +151,10 @@ interface State {
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
-<<<<<<< dev
+  instructions: Record<string, string>
   // Live headers object each remote transport was built with; the SDK re-reads
   // requestInit.headers per request, so refreshHeaders can rotate it in place.
   headers: Record<string, Record<string, string>>
-=======
-  instructions: Record<string, string>
 }
 
 export interface ServerInstructions {
@@ -174,7 +169,6 @@ export interface McpTool {
   readonly def: MCPToolDef
   readonly client: MCPClient
   readonly timeout?: number
->>>>>>> v1.17.14
 }
 
 export interface Interface {
@@ -415,16 +409,13 @@ const layer = Layer.effect(
           if (!listed) {
             return yield* Effect.fail(new Error("Failed to get tools"))
           }
-<<<<<<< dev
-          return { mcpClient, status, defs: listed, headers } satisfies CreateResult
-=======
           return {
             mcpClient,
             status,
             defs: listed,
             instructions: mcpClient.getInstructions()?.trim(),
+            headers,
           } satisfies CreateResult
->>>>>>> v1.17.14
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore, Effect.andThen(Effect.failCause(cause))),
@@ -471,11 +462,8 @@ const layer = Layer.effect(
         if (s.clients[name] !== client) return
         delete s.clients[name]
         delete s.defs[name]
-<<<<<<< dev
-        delete s.headers[name]
-=======
         delete s.instructions[name]
->>>>>>> v1.17.14
+        delete s.headers[name]
         s.status[name] = { status: "failed", error: "Connection closed" }
         bridge.fork(
           Effect.logWarning("MCP connection closed", { server: name }).pipe(
@@ -530,11 +518,8 @@ const layer = Layer.effect(
           status: {},
           clients: {},
           defs: {},
-<<<<<<< dev
-          headers: {},
-=======
           instructions: {},
->>>>>>> v1.17.14
+          headers: {},
         }
 
         yield* Effect.forEach(
@@ -556,11 +541,8 @@ const layer = Layer.effect(
               if (result.mcpClient) {
                 s.clients[key] = result.mcpClient
                 s.defs[key] = result.defs!
-<<<<<<< dev
-                if (result.headers) s.headers[key] = result.headers
-=======
                 if (result.instructions) s.instructions[key] = result.instructions
->>>>>>> v1.17.14
+                if (result.headers) s.headers[key] = result.headers
                 watch(s, key, result.mcpClient, bridge, mcp.timeout)
               }
             }),
@@ -572,11 +554,8 @@ const layer = Layer.effect(
             const clients = Object.values(s.clients)
             s.clients = {}
             s.defs = {}
-<<<<<<< dev
-            s.headers = {}
-=======
             s.instructions = {}
->>>>>>> v1.17.14
+            s.headers = {}
             yield* Effect.forEach(
               clients,
               (client) =>
@@ -606,11 +585,8 @@ const layer = Layer.effect(
       const client = s.clients[name]
       delete s.clients[name]
       delete s.defs[name]
-<<<<<<< dev
-      delete s.headers[name]
-=======
       delete s.instructions[name]
->>>>>>> v1.17.14
+      delete s.headers[name]
       if (!client) return Effect.void
       return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
     }
@@ -629,13 +605,10 @@ const layer = Layer.effect(
       s.status[name] = { status: "connected" }
       s.clients[name] = client
       s.defs[name] = listed
-<<<<<<< dev
-      if (headers) s.headers[name] = headers
-      else delete s.headers[name]
-=======
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
->>>>>>> v1.17.14
+      if (headers) s.headers[name] = headers
+      else delete s.headers[name]
       watch(s, name, client, bridge, timeout)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
@@ -688,11 +661,7 @@ const layer = Layer.effect(
         return result.status
       }
 
-<<<<<<< dev
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, mcp.timeout, result.headers)
-=======
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
->>>>>>> v1.17.14
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout, result.headers)
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {

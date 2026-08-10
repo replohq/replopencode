@@ -105,15 +105,8 @@ describe("v2 location HttpApi", () => {
     }
   })
 
-<<<<<<< dev
   // TODO (Andrew, 2026-07-30, REPL-30054): skip-quarantined — httpapi-query-schema-drift leaks server-singleton state that strips location.project from streamed events when the files share a worker; passes in isolation.
-  test.skip("streams native EventV2 payloads with resolved locations", async () => {
-    await using tmp = await tmpdir({ git: true })
-    const response = await request("/api/event", tmp.path)
-    const reader = response.body!.getReader()
-    expect((await readEvent(reader)).type).toBe("server.connected")
-=======
-  test("streams native EventV2 payloads across locations", async () => {
+  test.skip("streams native EventV2 payloads across locations", async () => {
     await using subscriber = await tmpdir({ git: true })
     await using publisher = await tmpdir({ git: true })
     const response = await request("/api/event", subscriber.path)
@@ -121,7 +114,6 @@ describe("v2 location HttpApi", () => {
     const connected = await readEvent(reader)
     expect(connected.type).toBe("server.connected")
     expect(connected.location).toBeUndefined()
->>>>>>> v1.17.14
 
     const created = await request("/session", publisher.path, { method: "POST" })
     expect(created.status).toBe(200)

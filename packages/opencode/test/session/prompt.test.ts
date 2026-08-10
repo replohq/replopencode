@@ -109,31 +109,6 @@ function errorTool(parts: SessionV1.Part[]) {
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
 }
 
-<<<<<<< dev
-const mcp = Layer.succeed(
-  MCP.Service,
-  MCP.Service.of({
-    status: () => Effect.succeed({}),
-    clients: () => Effect.succeed({}),
-    tools: () => Effect.succeed({}),
-    prompts: () => Effect.succeed({}),
-    resources: () => Effect.succeed({}),
-    add: () => Effect.succeed({ status: { status: "disabled" as const } }),
-    connect: () => Effect.void,
-    disconnect: () => Effect.void,
-    refreshHeaders: () => Effect.void,
-    getPrompt: () => Effect.succeed(undefined),
-    readResource: () => Effect.succeed(undefined),
-    startAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
-    authenticate: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
-    finishAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
-    removeAuth: () => Effect.void,
-    supportsOAuth: () => Effect.succeed(false),
-    hasStoredTokens: () => Effect.succeed(false),
-    getAuthStatus: () => Effect.succeed("not_authenticated" as const),
-  }),
-)
-=======
 function makeMcp(instructions: MCP.ServerInstructions[] = []) {
   return Layer.succeed(
     MCP.Service,
@@ -148,6 +123,7 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
       add: () => Effect.succeed({ status: { status: "disabled" as const } }),
       connect: () => Effect.void,
       disconnect: () => Effect.void,
+      refreshHeaders: () => Effect.void,
       getPrompt: () => Effect.succeed(undefined),
       readResource: () => Effect.succeed(undefined),
       startAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
@@ -160,7 +136,6 @@ function makeMcp(instructions: MCP.ServerInstructions[] = []) {
     }),
   )
 }
->>>>>>> v1.17.14
 
 const lsp = Layer.succeed(
   LSP.Service,

@@ -271,7 +271,7 @@ const app = LayerNode.group([
 // Single shared build of the full app layer. Reused by createRoutes AND by the
 // per-listener harness reload (server.ts) so that, within one listener's
 // memoMap, both resolve the SAME service singletons (notably InstanceStore).
-export const appLayer = LayerNode.buildLayer(app)
+export const appLayer = AppNodeBuilderV1.build(app)
 
 export function createRoutes(
   corsOptions?: CorsOptions,
@@ -296,10 +296,6 @@ export function createRoutes(
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,
     ]),
-<<<<<<< dev
-    Layer.provide(appLayer),
-=======
->>>>>>> v1.17.14
     Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
     Layer.provide(sessionLocationLayer),
     Layer.provide(locationLayer),
@@ -312,7 +308,7 @@ export function createRoutes(
     ),
     Layer.provide(locationServiceMapV2),
 
-    Layer.provide(AppNodeBuilderV1.build(app)),
+    Layer.provide(appLayer),
     // Must stay last: layers provided later in this pipe build beneath earlier ones,
     // so Observability must come after every service graph. Otherwise eagerly forked
     // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout

@@ -73,12 +73,8 @@ interface ProcessorContext extends Input {
   blocked: boolean
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
-<<<<<<< dev
-  currentTextID: string | undefined
   firstTokenAt: number | undefined
   requestStartAt: number | undefined
-=======
->>>>>>> v1.17.14
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
 
@@ -118,12 +114,8 @@ const layer = Layer.effect(
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
-<<<<<<< dev
-        currentTextID: undefined,
         firstTokenAt: undefined,
         requestStartAt: undefined,
-=======
->>>>>>> v1.17.14
         reasoningMap: {},
       }
       let aborted = false
@@ -293,20 +285,7 @@ const layer = Layer.effect(
         switch (value.type) {
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
-<<<<<<< dev
             if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
-            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            if (mirrorAssistant) {
-              yield* events.publish(SessionEvent.Reasoning.Started, {
-                sessionID: ctx.sessionID,
-                assistantMessageID: yield* ensureV2AssistantMessage(),
-                reasoningID: value.id,
-                providerMetadata: value.providerMetadata,
-                timestamp: DateTime.makeUnsafe(Date.now()),
-              })
-            }
-=======
->>>>>>> v1.17.14
             ctx.reasoningMap[value.id] = {
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -512,21 +491,7 @@ const layer = Layer.effect(
           }
 
           case "text-start":
-<<<<<<< dev
             if (ctx.firstTokenAt === undefined) ctx.firstTokenAt = Date.now()
-            if (!ctx.assistantMessage.summary) {
-              // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (mirrorAssistant) {
-                yield* events.publish(SessionEvent.Text.Started, {
-                  sessionID: ctx.sessionID,
-                  assistantMessageID: yield* ensureV2AssistantMessage(),
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                  textID: value.id,
-                })
-              }
-            }
-=======
->>>>>>> v1.17.14
             ctx.currentText = {
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,

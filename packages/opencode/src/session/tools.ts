@@ -21,11 +21,9 @@ import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-<<<<<<< dev
-import { breadcrumb } from "@/util/stall-watchdog"
-=======
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { breadcrumb } from "@/util/stall-watchdog"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -40,7 +38,6 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
->>>>>>> v1.17.14
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info

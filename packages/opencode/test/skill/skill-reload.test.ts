@@ -3,10 +3,13 @@ import { Effect, Layer } from "effect"
 import path from "path"
 import { Skill } from "../../src/skill"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { provideTmpdirInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-const it = testEffect(Layer.mergeAll(Skill.defaultLayer, CrossSpawnSpawner.defaultLayer, testInstanceStoreLayer))
+const it = testEffect(
+  Layer.mergeAll(LayerNode.compile(Skill.node), LayerNode.compile(CrossSpawnSpawner.node), testInstanceStoreLayer),
+)
 
 function skillMd(name: string, description: string) {
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`

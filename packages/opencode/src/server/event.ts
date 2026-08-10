@@ -1,10 +1,11 @@
-import { EventV2 } from "@opencode-ai/core/event"
 import { Schema } from "effect"
+import { Event as SchemaEvent } from "@opencode-ai/schema/event"
+import { ServerEvent } from "@opencode-ai/schema/server-event"
 
+// Fork-only SIGHUP-reload event; non-durable, so it stays out of the durable-event manifests.
 export const Event = {
-  Connected: EventV2.define({ type: "server.connected", schema: {} }),
-  Disposed: EventV2.define({ type: "global.disposed", schema: {} }),
-  Reloaded: EventV2.define({ type: "global.reloaded", schema: {} }),
+  ...ServerEvent,
+  Reloaded: SchemaEvent.define({ type: "global.reloaded", schema: {} }),
 }
 
 export const InstanceDisposed = Schema.Struct({

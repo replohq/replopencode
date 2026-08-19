@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -252,6 +252,64 @@ describe("tool.task", () => {
       expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
       expect(seen?.sessionID).toBe(child.id)
       expect(seen?.variant).toBe("xhigh")
+    }),
+  )
+
+  it.instance("execute fails when the child turn ends with an orphaned interrupted tool", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            const message = reply(input, "Let me compose the file.")
+            message.parts.push({
+              id: PartID.ascending(),
+              messageID: message.info.id,
+              sessionID: input.sessionID,
+              type: "tool",
+              callID: "call_orphan",
+              tool: "write",
+              state: {
+                status: "error",
+                error: "Tool execution aborted",
+                input: {},
+                metadata: { interrupted: true },
+                time: { start: Date.now(), end: Date.now() },
+              },
+            })
+            return message
+          }),
+      }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "write file",
+            prompt: "write the briefing file",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      const rendered = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : ""
+      expect(rendered).toContain("interrupted mid-turn")
+      expect(rendered).toContain('"write" tool call')
+      expect(rendered).toContain("Let me compose the file.")
     }),
   )
 

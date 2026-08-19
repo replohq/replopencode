@@ -196,7 +196,24 @@ export const TaskTool = Tool.define(
           agent: next.name,
           parts,
         })
-        return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        // A severed stream ends the child turn without failing it: cleanup()
+        // marks the never-executed tool_use error/interrupted and the run loop
+        // exits, so the child's mid-work narration would otherwise be returned
+        // as a completed result. Fail the task so the parent knows the work is
+        // unfinished instead of trusting the truncated text.
+        const orphan = result.parts.find(
+          (part): part is SessionV1.ToolPart =>
+            part.type === "tool" && part.state.status === "error" && part.state.metadata?.interrupted === true,
+        )
+        if (orphan) {
+          return yield* Effect.fail(
+            new Error(
+              `Subagent was interrupted mid-turn: its "${orphan.tool}" tool call was cut off before executing, so the task did not finish. Re-run the task to complete it. Partial output before the interruption:\n${text}`,
+            ),
+          )
+        }
+        return text
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (

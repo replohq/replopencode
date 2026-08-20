@@ -1,7 +1,8 @@
 # Fork CI. The inherited upstream workflows (test.yml, typecheck.yml, ...) all
 # target blacksmith-* self-hosted runners this fork does not have, so they never
 # run. This is the fork's own gate on GitHub-hosted runners, scoped to
-# packages/opencode — where every fork patch lands.
+# packages/opencode — where every fork patch lands — plus packages/core's
+# schema migration gates.
 name: fork-ci
 
 on:
@@ -56,3 +57,7 @@ jobs:
       - name: HttpApi exerciser gates
         working-directory: packages/opencode
         run: bun run test:httpapi
+
+      - name: Core schema migration gates
+        working-directory: packages/core
+        run: bun test test/database-migration.test.ts

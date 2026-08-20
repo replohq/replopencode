@@ -1,5 +1,8 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Deferred, Effect, Layer, Schema, Context } from "effect"
+import { asc, eq } from "drizzle-orm"
+import { Database } from "@opencode-ai/core/database/database"
+import { QuestionRequestTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
@@ -43,6 +46,16 @@ interface State {
   pending: Map<QuestionID, PendingEntry>
 }
 
+export type ReplyOutcome =
+  | { readonly outcome: "resolved" }
+  | { readonly outcome: "orphaned"; readonly request: Request }
+
+type QuestionRequestRow = typeof QuestionRequestTable.$inferSelect
+
+function rowToRequest(row: QuestionRequestRow): Request {
+  return { ...row.data, id: row.id, sessionID: row.session_id }
+}
+
 // Service
 
 export interface Interface {
@@ -54,8 +67,9 @@ export interface Interface {
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<void, NotFoundError>
+  }) => Effect.Effect<ReplyOutcome, NotFoundError>
   readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
+  readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -65,12 +79,16 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const { db } = yield* Database.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
         const state = {
           pending: new Map<QuestionID, PendingEntry>(),
         }
 
+        // Rows in question_request intentionally survive this finalizer so a
+        // restarted process can still resolve replies to questions it no
+        // longer has waiters for.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const item of state.pending.values()) {
@@ -100,6 +118,15 @@ const layer = Layer.effect(
         questions: input.questions,
         tool: input.tool,
       }
+      yield* db
+        .insert(QuestionRequestTable)
+        .values({
+          id,
+          session_id: input.sessionID,
+          data: { questions: input.questions, tool: input.tool },
+        })
+        .run()
+        .pipe(Effect.orDie)
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
 
@@ -115,47 +142,90 @@ const layer = Layer.effect(
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
     }) {
-      const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(input.requestID)
-      if (!existing) {
+      const row = yield* db
+        .select()
+        .from(QuestionRequestTable)
+        .where(eq(QuestionRequestTable.id, input.requestID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) {
         yield* Effect.logWarning("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      pending.delete(input.requestID)
+      yield* db.delete(QuestionRequestTable).where(eq(QuestionRequestTable.id, row.id)).run().pipe(Effect.orDie)
+      const request = rowToRequest(row)
       yield* Effect.logInfo("replied", { requestID: input.requestID, answers: input.answers })
       yield* events.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
+        sessionID: request.sessionID,
+        requestID: request.id,
         answers: input.answers.map((a) => [...a]),
       })
+      const pending = (yield* InstanceState.get(state)).pending
+      const existing = pending.get(input.requestID)
+      if (!existing) {
+        yield* Effect.logInfo("reply for orphaned request", { requestID: input.requestID })
+        return { outcome: "orphaned", request } as const
+      }
+      pending.delete(input.requestID)
       yield* Deferred.succeed(existing.deferred, input.answers)
+      return { outcome: "resolved" } as const
     })
 
-    const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
-      const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(requestID)
-      if (!existing) {
-        yield* Effect.logWarning("reject for unknown request", { requestID })
-        return yield* new NotFoundError({ requestID })
-      }
-      pending.delete(requestID)
-      yield* Effect.logInfo("rejected", { requestID })
+    const rejectRow = Effect.fn("Question.rejectRow")(function* (row: QuestionRequestRow) {
+      yield* db.delete(QuestionRequestTable).where(eq(QuestionRequestTable.id, row.id)).run().pipe(Effect.orDie)
+      yield* Effect.logInfo("rejected", { requestID: row.id })
       yield* events.publish(Event.Rejected, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
+        sessionID: row.session_id,
+        requestID: row.id,
       })
+      const pending = (yield* InstanceState.get(state)).pending
+      const existing = pending.get(row.id)
+      if (!existing) return
+      pending.delete(row.id)
       yield* Deferred.fail(existing.deferred, new RejectedError())
     })
 
-    const list = Effect.fn("Question.list")(function* () {
-      const pending = (yield* InstanceState.get(state)).pending
-      return Array.from(pending.values(), (x) => x.info)
+    const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
+      const row = yield* db
+        .select()
+        .from(QuestionRequestTable)
+        .where(eq(QuestionRequestTable.id, requestID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) {
+        yield* Effect.logWarning("reject for unknown request", { requestID })
+        return yield* new NotFoundError({ requestID })
+      }
+      yield* rejectRow(row)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    const rejectAllForSession = Effect.fn("Question.rejectAllForSession")(function* (sessionID: SessionID) {
+      const rows = yield* db
+        .select()
+        .from(QuestionRequestTable)
+        .where(eq(QuestionRequestTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      yield* Effect.forEach(rows, rejectRow, { discard: true })
+    })
+
+    const list = Effect.fn("Question.list")(function* () {
+      const ctx = yield* InstanceState.context
+      const rows = yield* db
+        .select({ request: QuestionRequestTable })
+        .from(QuestionRequestTable)
+        .innerJoin(SessionTable, eq(QuestionRequestTable.session_id, SessionTable.id))
+        .where(eq(SessionTable.project_id, ctx.project.id))
+        .orderBy(asc(QuestionRequestTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return rows.map((x) => rowToRequest(x.request))
+    })
+
+    return Service.of({ ask, reply, reject, rejectAllForSession, list })
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Database.node] })
 
 export * as Question from "."

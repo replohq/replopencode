@@ -14,6 +14,7 @@ import { Timestamps } from "../database/schema.sql"
 import type { SystemContext } from "../system-context/index"
 import { AgentV2 } from "../agent"
 import type { Revert } from "@opencode-ai/schema/revert"
+import { QuestionV1 } from "@opencode-ai/schema/question-v1"
 
 type SessionMessageData = Omit<(typeof SessionMessage.Message)["Encoded"], "type" | "id">
 type V1MessageData = Omit<SessionV1.Info, "id" | "sessionID">
@@ -114,6 +115,22 @@ export const TodoTable = sqliteTable(
     primaryKey({ columns: [table.session_id, table.position] }),
     index("todo_session_idx").on(table.session_id),
   ],
+)
+
+type QuestionRequestData = Omit<typeof QuestionV1.Request.Type, "id" | "sessionID">
+
+export const QuestionRequestTable = sqliteTable(
+  "question_request",
+  {
+    id: text().$type<typeof QuestionV1.ID.Type>().primaryKey(),
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    ...Timestamps,
+    data: text({ mode: "json" }).notNull().$type<QuestionRequestData>(),
+  },
+  (table) => [index("question_request_session_idx").on(table.session_id)],
 )
 
 export const SessionMessageTable = sqliteTable(

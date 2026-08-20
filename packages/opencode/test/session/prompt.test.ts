@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -24,6 +24,9 @@ import { Git } from "../../src/git"
 import { Image } from "../../src/image/image"
 
 import { Question } from "../../src/question"
+import { formatAnswerOutput } from "../../src/question/format"
+import { resumeOrphanedReply } from "../../src/question/resume"
+import { QuestionID } from "../../src/question/schema"
 import { Todo } from "../../src/session/todo"
 import { Session } from "@/session/session"
 import { SessionMessageTable } from "@opencode-ai/core/session/sql"
@@ -2400,4 +2403,96 @@ noLLMServer.instance(
       }
     }),
   30_000,
+)
+
+// Orphaned question resume
+
+const questionRequest = (input: { sessionID: SessionID; messageID: MessageID; callID: string }): Question.Request => ({
+  id: QuestionID.ascending(),
+  sessionID: input.sessionID,
+  questions: [
+    {
+      question: "Resume me?",
+      header: "Resume",
+      options: [{ label: "Yes", description: "Yes" }],
+    },
+  ],
+  tool: { messageID: input.messageID, callID: input.callID },
+})
+
+const seedDanglingQuestion = Effect.fn("test.seedDanglingQuestion")(function* (input: {
+  sessionID: SessionID
+  messageID: MessageID
+  callID: string
+}) {
+  const sessions = yield* Session.Service
+  yield* sessions.updatePart({
+    id: PartID.ascending(),
+    messageID: input.messageID,
+    sessionID: input.sessionID,
+    type: "tool",
+    callID: input.callID,
+    tool: "question",
+    state: { status: "running", input: {}, time: { start: 1 } },
+  })
+})
+
+const questionToolPart = Effect.fn("test.questionToolPart")(function* (sessionID: SessionID, messageID: MessageID) {
+  const sessions = yield* Session.Service
+  const message = yield* sessions.findMessage(sessionID, (msg) => msg.info.id === messageID)
+  return completedTool(Option.isSome(message) ? [...message.value.parts] : [])
+})
+
+it.instance("orphaned reply heals the dangling question part and re-enters the loop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* llm.text("resumed")
+
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+
+    const part = yield* questionToolPart(chat.id, seeded.assistant.id)
+    expect(part?.state.output).toBe(formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }))
+    expect(part?.state.title).toBe("Asked 1 question")
+    expect(part?.state.metadata).toEqual({ answers: [["Yes"]] })
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("orphaned reply resume completes the part but skips the loop while the session is busy", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* status.set(chat.id, { type: "busy" })
+
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+
+    const part = yield* questionToolPart(chat.id, seeded.assistant.id)
+    expect(part?.state.output).toBe(formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }))
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("orphaned reply resume tolerates a missing tool part and still re-enters the loop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    yield* llm.text("resumed")
+
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "no-such-call" })
+    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
 )

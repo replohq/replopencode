@@ -11,7 +11,13 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import type { Config } from "@/config/config"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@opencode-ai/core/database/database"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { InstanceRef } from "../../src/effect/instance-ref"
+import { InstanceState } from "../../src/effect/instance-state"
+import type { SessionID } from "../../src/session/schema"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import type { InstanceContext } from "../../src/project/instance-context"
 import { InstanceRuntime } from "../../src/project/instance-runtime"
@@ -22,6 +28,29 @@ const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap
 export const testInstanceStoreLayer = LayerNode.compile(InstanceStore.node, [
   [InstanceStore.bootstrapNode, noopBootstrap],
 ])
+
+/** Persisted question requests reference real session rows; tests that ask questions seed one here. */
+export const seedSession = Effect.fn("TestFixture.seedSession")(function* (sessionID: SessionID) {
+  const { db } = yield* Database.Service
+  const ctx = yield* InstanceState.context
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: ctx.project.id, worktree: AbsolutePath.make(ctx.worktree), sandboxes: [] })
+    .onConflictDoNothing()
+    .run()
+  yield* db
+    .insert(SessionTable)
+    .values({
+      id: sessionID,
+      project_id: ctx.project.id,
+      slug: sessionID,
+      directory: ctx.directory,
+      title: "test session",
+      version: "test",
+    })
+    .onConflictDoNothing()
+    .run()
+})
 
 export async function provideTestInstance<R>(input: {
   directory: string

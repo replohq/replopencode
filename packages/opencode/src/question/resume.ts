@@ -5,12 +5,7 @@ import { SessionStatus } from "@/session/status"
 import { formatAnswerOutput } from "./format"
 import type { Answer, Request } from "."
 
-/**
- * Continues a session after a reply arrived for a question whose in-process
- * waiter died with a restart. The persisted request lets us complete the
- * interrupted tool call with the real answers and re-enter the assistant loop
- * as if the answer had resolved normally.
- */
+/** Completes a restart-orphaned question's tool call with the real answers and re-enters the assistant loop. */
 export const resumeOrphanedReply = Effect.fn("Question.resumeOrphanedReply")(function* (input: {
   request: Request
   answers: ReadonlyArray<Answer>

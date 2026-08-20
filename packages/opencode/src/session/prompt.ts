@@ -154,8 +154,7 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
-      // Stop must clear persisted question rows so a docked ask can't outlive
-      // the turn it belonged to; process shutdown deliberately does not.
+      // Stop clears persisted question rows; process shutdown deliberately does not.
       yield* questions.rejectAllForSession(sessionID)
     })
 

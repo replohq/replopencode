@@ -86,9 +86,7 @@ const layer = Layer.effect(
           pending: new Map<QuestionID, PendingEntry>(),
         }
 
-        // Rows in question_request intentionally survive this finalizer so a
-        // restarted process can still resolve replies to questions it no
-        // longer has waiters for.
+        // Rows intentionally survive shutdown so a restarted process can still resolve replies.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const item of state.pending.values()) {
@@ -138,21 +136,25 @@ const layer = Layer.effect(
       )
     })
 
+    // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
+    const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
+      return yield* db
+        .delete(QuestionRequestTable)
+        .where(eq(QuestionRequestTable.id, requestID))
+        .returning()
+        .get()
+        .pipe(Effect.orDie)
+    })
+
     const reply = Effect.fn("Question.reply")(function* (input: {
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
     }) {
-      const row = yield* db
-        .select()
-        .from(QuestionRequestTable)
-        .where(eq(QuestionRequestTable.id, input.requestID))
-        .get()
-        .pipe(Effect.orDie)
+      const row = yield* claim(input.requestID)
       if (!row) {
         yield* Effect.logWarning("reply for unknown request", { requestID: input.requestID })
         return yield* new NotFoundError({ requestID: input.requestID })
       }
-      yield* db.delete(QuestionRequestTable).where(eq(QuestionRequestTable.id, row.id)).run().pipe(Effect.orDie)
       const request = rowToRequest(row)
       yield* Effect.logInfo("replied", { requestID: input.requestID, answers: input.answers })
       yield* events.publish(Event.Replied, {
@@ -171,8 +173,7 @@ const layer = Layer.effect(
       return { outcome: "resolved" } as const
     })
 
-    const rejectRow = Effect.fn("Question.rejectRow")(function* (row: QuestionRequestRow) {
-      yield* db.delete(QuestionRequestTable).where(eq(QuestionRequestTable.id, row.id)).run().pipe(Effect.orDie)
+    const rejectClaimed = Effect.fn("Question.rejectClaimed")(function* (row: QuestionRequestRow) {
       yield* Effect.logInfo("rejected", { requestID: row.id })
       yield* events.publish(Event.Rejected, {
         sessionID: row.session_id,
@@ -186,27 +187,22 @@ const layer = Layer.effect(
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
-      const row = yield* db
-        .select()
-        .from(QuestionRequestTable)
-        .where(eq(QuestionRequestTable.id, requestID))
-        .get()
-        .pipe(Effect.orDie)
+      const row = yield* claim(requestID)
       if (!row) {
         yield* Effect.logWarning("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      yield* rejectRow(row)
+      yield* rejectClaimed(row)
     })
 
     const rejectAllForSession = Effect.fn("Question.rejectAllForSession")(function* (sessionID: SessionID) {
       const rows = yield* db
-        .select()
-        .from(QuestionRequestTable)
+        .delete(QuestionRequestTable)
         .where(eq(QuestionRequestTable.session_id, sessionID))
+        .returning()
         .all()
         .pipe(Effect.orDie)
-      yield* Effect.forEach(rows, rejectRow, { discard: true })
+      yield* Effect.forEach(rows, rejectClaimed, { discard: true })
     })
 
     const list = Effect.fn("Question.list")(function* () {

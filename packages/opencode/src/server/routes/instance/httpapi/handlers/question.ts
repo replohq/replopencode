@@ -9,8 +9,7 @@ import { QuestionNotFoundError } from "../errors"
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
     const svc = yield* Question.Service
-    // Build-time scope outlives any single request, so a resume forked into it
-    // keeps running after the reply endpoint has already responded.
+    // Build-time scope: resumes forked into it outlive the reply request.
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("QuestionHttpApi.list")(function* () {

@@ -1,11 +1,13 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@opencode-ai/core/database/database"
 import { Effect, Fiber, Queue } from "effect"
 import { QuestionTool } from "../../src/tool/question"
 import { Question } from "../../src/question"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
+import { seedSession } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 
@@ -21,7 +23,7 @@ const ctx = {
 }
 
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([Question.node, EventV2Bridge.node, Truncate.node, Agent.node])),
+  LayerNode.compile(LayerNode.group([Question.node, EventV2Bridge.node, Truncate.node, Agent.node, Database.node])),
 )
 
 const pending = Effect.fn("QuestionToolTest.pending")(function* (question: Question.Interface) {
@@ -44,6 +46,7 @@ const pending = Effect.fn("QuestionToolTest.pending")(function* (question: Quest
 describe("tool.question", () => {
   it.instance("should successfully execute with valid question parameters", () =>
     Effect.gen(function* () {
+      yield* seedSession(ctx.sessionID)
       const question = yield* Question.Service
       const toolInfo = yield* QuestionTool
       const tool = yield* toolInfo.init()
@@ -70,6 +73,7 @@ describe("tool.question", () => {
 
   it.instance("should now pass with a header longer than 12 but less than 30 chars", () =>
     Effect.gen(function* () {
+      yield* seedSession(ctx.sessionID)
       const question = yield* Question.Service
       const toolInfo = yield* QuestionTool
       const tool = yield* toolInfo.init()

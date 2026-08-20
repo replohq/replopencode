@@ -1,6 +1,7 @@
 import { Question } from "@/question"
+import { resumeOrphanedReply } from "@/question/resume"
 import { QuestionID } from "@/question/schema"
-import { Effect } from "effect"
+import { Effect, Scope } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { QuestionNotFoundError } from "../errors"
@@ -8,6 +9,8 @@ import { QuestionNotFoundError } from "../errors"
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
     const svc = yield* Question.Service
+    // Build-time scope: resumes forked into it outlive the reply request.
+    const scope = yield* Scope.Scope
 
     const list = Effect.fn("QuestionHttpApi.list")(function* () {
       return yield* svc.list()
@@ -17,7 +20,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       params: { requestID: QuestionID }
       payload: Question.Reply
     }) {
-      yield* svc
+      const result = yield* svc
         .reply({
           requestID: ctx.params.requestID,
           answers: ctx.payload.answers,
@@ -32,6 +35,14 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
             ),
           ),
         )
+      if (result.outcome === "orphaned") {
+        yield* resumeOrphanedReply({ request: result.request, answers: ctx.payload.answers }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("question resume failed", { requestID: ctx.params.requestID, cause }),
+          ),
+          Effect.forkIn(scope),
+        )
+      }
       return true
     })
 

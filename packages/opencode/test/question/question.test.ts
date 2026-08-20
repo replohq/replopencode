@@ -1,17 +1,20 @@
 import { afterEach, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
 import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
-import { disposeAllInstances, provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { disposeAllInstances, provideInstance, seedSession, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 
-const questionLayer = LayerNode.compile(LayerNode.group([Question.node, EventV2Bridge.node, CrossSpawnSpawner.node]))
+const questionLayer = LayerNode.compile(
+  LayerNode.group([Question.node, EventV2Bridge.node, CrossSpawnSpawner.node, Database.node]),
+)
 const it = testEffect(questionLayer)
 const lifecycle = testEffect(Layer.mergeAll(questionLayer, testInstanceStoreLayer))
 
@@ -20,6 +23,7 @@ const askEffect = Effect.fn("QuestionTest.ask")(function* (input: {
   questions: ReadonlyArray<Question.Info>
   tool?: Question.Tool
 }) {
+  yield* seedSession(input.sessionID)
   const question = yield* Question.Service
   return yield* question.ask(input)
 })
@@ -31,7 +35,7 @@ const replyEffect = Effect.fn("QuestionTest.reply")(function* (input: {
   answers: ReadonlyArray<Question.Answer>
 }) {
   const question = yield* Question.Service
-  yield* question.reply(input)
+  return yield* question.reply(input)
 })
 
 const rejectEffect = Effect.fn("QuestionTest.reject")(function* (id: QuestionID) {
@@ -144,11 +148,12 @@ it.instance(
       const pending = yield* waitForPending(1)
       const requestID = pending[0].id
 
-      yield* replyEffect({
+      const outcome = yield* replyEffect({
         requestID,
         answers: [["Option 1"]],
       })
 
+      expect(outcome.outcome).toBe("resolved")
       expect(yield* Fiber.join(fiber)).toEqual([["Option 1"]])
     }),
   { git: true },
@@ -455,5 +460,73 @@ lifecycle.live("pending question rejects on instance reload", () =>
     const exit = yield* Fiber.await(fiber)
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.RejectedError)
+  }),
+)
+
+it.instance(
+  "rejectAllForSession - clears rows and fails the waiter",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_cancel"),
+        questions: [
+          {
+            question: "Cancel me?",
+            header: "Cancel",
+            options: [{ label: "Yes", description: "Yes" }],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      expect(yield* waitForPending(1)).toHaveLength(1)
+      yield* Question.Service.use((svc) => svc.rejectAllForSession(SessionID.make("ses_cancel")))
+
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
+      expect(yield* listEffect).toHaveLength(0)
+    }),
+  { git: true },
+)
+
+lifecycle.live("request survives instance reload and reply heals it", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true })
+    const questions = [
+      {
+        question: "Survive me?",
+        header: "Survive",
+        options: [{ label: "Yes", description: "Yes" }],
+      },
+    ]
+    const fiber = yield* askEffect({
+      sessionID: SessionID.make("ses_survive"),
+      questions,
+    }).pipe(provideInstance(dir), Effect.forkScoped)
+
+    const pending = yield* waitForPending(1).pipe(provideInstance(dir))
+    yield* InstanceStore.Service.use((store) => store.reload({ directory: dir }))
+    yield* Fiber.await(fiber)
+
+    const survived = yield* listEffect.pipe(provideInstance(dir))
+    expect(survived).toHaveLength(1)
+    expect(survived[0].id).toBe(pending[0].id)
+    expect(survived[0].sessionID).toBe(SessionID.make("ses_survive"))
+    expect(survived[0].questions).toEqual(questions)
+
+    const replied = yield* Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const seen = yield* Queue.unbounded<unknown>()
+      const off = yield* events.listen((event) => {
+        if (event.type === Question.Event.Replied.type) Queue.offerUnsafe(seen, event.data)
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const outcome = yield* replyEffect({ requestID: pending[0].id, answers: [["Yes"]] })
+      expect(outcome.outcome).toBe("orphaned")
+      return yield* Queue.take(seen).pipe(Effect.timeout("2 seconds"))
+    }).pipe(provideInstance(dir))
+    expect(replied).toMatchObject({ requestID: pending[0].id, answers: [["Yes"]] })
+
+    const after = yield* listEffect.pipe(provideInstance(dir))
+    expect(after).toHaveLength(0)
   }),
 )

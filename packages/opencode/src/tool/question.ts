@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { Question } from "../question"
+import { formatAnswerOutput } from "../question/format"
 import DESCRIPTION from "./question.txt"
 
 export const Parameters = Schema.Struct({
@@ -27,13 +28,9 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
             tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
           })
 
-          const formatted = params.questions
-            .map((q, i) => `"${q.question}"="${answers[i]?.length ? answers[i].join(", ") : "Unanswered"}"`)
-            .join(", ")
-
           return {
             title: `Asked ${params.questions.length} question${params.questions.length > 1 ? "s" : ""}`,
-            output: `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`,
+            output: formatAnswerOutput({ questions: params.questions, answers }),
             metadata: {
               answers,
             },

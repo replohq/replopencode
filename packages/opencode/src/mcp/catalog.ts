@@ -35,8 +35,11 @@ export async function paginate<T, R extends { nextCursor?: string }>(
   throw new Error(`MCP list exceeded ${MAX_LIST_PAGES} pages`)
 }
 
-export function defs(client: Client, timeout?: number) {
-  return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
+export function defs(clientName: string, client: Client, timeout?: number) {
+  return listTools(client, timeout).pipe(
+    Effect.tapError((error) => Effect.logWarning("failed to get tools", { clientName, error: error.message })),
+    Effect.orElseSucceed(() => undefined),
+  )
 }
 
 export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
@@ -142,17 +145,20 @@ export function resourceTemplates(client: Client, timeout?: number) {
   )
 }
 
-function listTools(client: Client, timeout: number) {
+export function listTools(client: Client, timeout?: number) {
+  const requestTimeout = timeout ?? DEFAULT_TIMEOUT
   return Effect.tryPromise({
     try: () =>
       paginate(
         async (cursor) => {
           const params = cursor === undefined ? undefined : { cursor }
           try {
-            return await client.listTools(params, { timeout })
+            return await client.listTools(params, { timeout: requestTimeout })
           } catch (error) {
             if (!(error instanceof Error) || !isOutputSchemaValidationError(error)) throw error
-            return client.request({ method: "tools/list", params }, TolerantListToolsResultSchema, { timeout })
+            return client.request({ method: "tools/list", params }, TolerantListToolsResultSchema, {
+              timeout: requestTimeout,
+            })
           }
         },
         (result) => result.tools,

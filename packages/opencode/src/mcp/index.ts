@@ -405,10 +405,14 @@ const layer = Layer.effect(
         }
 
         return yield* Effect.gen(function* () {
-          const listed = mcpClient.getServerCapabilities()?.tools ? yield* McpCatalog.defs(mcpClient, mcp.timeout) : []
-          if (!listed) {
-            return yield* Effect.fail(new Error("Failed to get tools"))
-          }
+          // Surface the real listTools failure: it becomes this server's failed
+          // status and a log line, instead of an unexplained "Failed to get tools".
+          const listed = mcpClient.getServerCapabilities()?.tools
+            ? yield* McpCatalog.listTools(mcpClient, mcp.timeout).pipe(
+                Effect.tapError((error) => Effect.logWarning("failed to get tools", { key, error: error.message })),
+                Effect.mapError((error) => new Error(`Failed to get tools: ${error.message}`)),
+              )
+            : []
           return {
             mcpClient,
             status,
@@ -481,7 +485,7 @@ const layer = Layer.effect(
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
-        const listed = await bridge.promise(McpCatalog.defs(client, timeout))
+        const listed = await bridge.promise(McpCatalog.defs(name, client, timeout))
         if (!listed) return
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
@@ -928,7 +932,7 @@ const layer = Layer.effect(
 
         const listed = client
           ? client.getServerCapabilities()?.tools
-            ? yield* McpCatalog.defs(client, mcpConfig.timeout)
+            ? yield* McpCatalog.defs(mcpName, client, mcpConfig.timeout)
             : []
           : undefined
         if (!client || !listed) {

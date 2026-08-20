@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Deferred, Effect, Layer, Schema, Context } from "effect"
-import { asc, eq } from "drizzle-orm"
+import { and, asc, eq, inArray } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { QuestionRequestTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { InstanceState } from "@/effect/instance-state"
@@ -137,10 +137,21 @@ const layer = Layer.effect(
     })
 
     // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
+    // Scoped to this instance's project (like list) so co-located instances sharing the global DB
+    // cannot consume each other's live requests.
     const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
+      const ctx = yield* InstanceState.context
       return yield* db
         .delete(QuestionRequestTable)
-        .where(eq(QuestionRequestTable.id, requestID))
+        .where(
+          and(
+            eq(QuestionRequestTable.id, requestID),
+            inArray(
+              QuestionRequestTable.session_id,
+              db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, ctx.project.id)),
+            ),
+          ),
+        )
         .returning()
         .get()
         .pipe(Effect.orDie)
@@ -169,7 +180,12 @@ const layer = Layer.effect(
         return { outcome: "orphaned", request } as const
       }
       pending.delete(input.requestID)
-      yield* Deferred.succeed(existing.deferred, input.answers)
+      const delivered = yield* Deferred.succeed(existing.deferred, input.answers)
+      if (!delivered) {
+        // Instance disposal already failed this waiter; the answers still need the orphaned heal path.
+        yield* Effect.logInfo("reply raced instance disposal, treating as orphaned", { requestID: input.requestID })
+        return { outcome: "orphaned", request } as const
+      }
       return { outcome: "resolved" } as const
     })
 

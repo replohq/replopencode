@@ -206,6 +206,7 @@ function fake(
     requestStartAt: undefined,
     firstRequestStartAt: undefined,
     snapshotMs: 0,
+    awaitSnapshot: Effect.succeed(undefined),
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
     process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),

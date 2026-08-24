@@ -1093,6 +1093,7 @@ const layer = Layer.effect(
         let firstRequestStartAt: number | undefined
         let ttftStep: number | undefined
         let historyMs = 0
+        let cachedMsgs: SessionV1.WithParts[] | undefined
         let toolsMs = 0
         let contextMs = 0
         let snapshotMs = 0
@@ -1103,9 +1104,26 @@ const layer = Layer.effect(
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
           const historyStart = Date.now()
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
-            Effect.provideService(Database.Service, database),
-          )
+          let msgs: SessionV1.WithParts[]
+          if (cachedMsgs === undefined) {
+            msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+              Effect.provideService(Database.Service, database),
+            )
+          } else {
+            const maxId = cachedMsgs.reduce((max, m) => (m.info.id > max ? m.info.id : max), cachedMsgs[0]!.info.id)
+            const fresh = yield* MessageV2.after({ sessionID, id: maxId }).pipe(
+              Effect.provideService(Database.Service, database),
+            )
+            // Compaction/summary rows change the retained window; recompute it from scratch.
+            const rewritesHistory = fresh.some(
+              (m) => m.parts.some((p) => p.type === "compaction") || (m.info.role === "assistant" && m.info.summary),
+            )
+            msgs = rewritesHistory
+              ? yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+                  Effect.provideService(Database.Service, database),
+                )
+              : [...cachedMsgs, ...fresh]
+          }
           historyMs += Date.now() - historyStart
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1197,6 +1215,7 @@ const layer = Layer.effect(
             Effect.provideService(FSUtil.Service, fsys),
             Effect.provideService(Session.Service, sessions),
           )
+          cachedMsgs = msgs
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),

@@ -25,6 +25,7 @@ import { and } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
+import { gt } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
@@ -488,6 +489,19 @@ export function stream(sessionID: SessionID) {
     return result
   })
 }
+
+/** Messages created after the given id; ids are monotonic per session (MessageID.ascending). */
+export const after = Effect.fn("MessageV2.after")(function* (input: { sessionID: SessionID; id: MessageID }) {
+  const { db } = yield* Database.Service
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(and(eq(MessageTable.session_id, input.sessionID), gt(MessageTable.id, input.id)))
+    .orderBy(MessageTable.id)
+    .all()
+    .pipe(Effect.orDie)
+  return yield* hydrate(db, rows)
+})
 
 export function parts(messageID: MessageID) {
   return Effect.gen(function* () {

@@ -33,6 +33,7 @@ export interface Handle {
   readonly message: SessionV1.Assistant
   readonly firstTokenAt: number | undefined
   readonly requestStartAt: number | undefined
+  readonly firstRequestStartAt: number | undefined
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -75,6 +76,7 @@ interface ProcessorContext extends Input {
   currentText: SessionV1.TextPart | undefined
   firstTokenAt: number | undefined
   requestStartAt: number | undefined
+  firstRequestStartAt: number | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
 
@@ -116,6 +118,7 @@ const layer = Layer.effect(
         currentText: undefined,
         firstTokenAt: undefined,
         requestStartAt: undefined,
+        firstRequestStartAt: undefined,
         reasoningMap: {},
       }
       let aborted = false
@@ -646,6 +649,8 @@ const layer = Layer.effect(
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
             ctx.requestStartAt = Date.now()
+            // Retries re-stamp requestStartAt; keep the first attempt so prep_ms excludes backoff.
+            if (ctx.firstRequestStartAt === undefined) ctx.firstRequestStartAt = ctx.requestStartAt
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
@@ -700,6 +705,9 @@ const layer = Layer.effect(
         },
         get requestStartAt() {
           return ctx.requestStartAt
+        },
+        get firstRequestStartAt() {
+          return ctx.firstRequestStartAt
         },
         updateToolCall,
         completeToolCall,

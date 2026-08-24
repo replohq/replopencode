@@ -1296,8 +1296,8 @@ const layer = Layer.effect(
 
             // A tool-only first step emits no token, so the ttft pair can capture from a later
             // step and straddle tool execution; prep_ms and ttft_step exist to keep that honest.
-            if (firstRequestStartAt === undefined && handle.requestStartAt !== undefined) {
-              firstRequestStartAt = handle.requestStartAt
+            if (firstRequestStartAt === undefined && handle.firstRequestStartAt !== undefined) {
+              firstRequestStartAt = handle.firstRequestStartAt
             }
             if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
               firstTokenAt = handle.firstTokenAt

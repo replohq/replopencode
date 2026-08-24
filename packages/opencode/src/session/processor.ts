@@ -1,3 +1,4 @@
+import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
@@ -133,17 +134,21 @@ const layer = Layer.effect(
       )
       // step-finish clears ctx.snapshot so every step diffs against its own baseline: the
       // forked fiber serves only the first capture; later steps track fresh, as before.
+      // Serialized so concurrent tool executions share one baseline instead of racing tracks.
       let snapshotJoined = false
-      const awaitSnapshot = Effect.gen(function* () {
-        if (ctx.snapshot !== undefined) return ctx.snapshot
-        if (!snapshotJoined) {
-          snapshotJoined = true
-          ctx.snapshot = yield* Fiber.join(snapshotFiber)
-        } else {
-          ctx.snapshot = yield* snapshot.track().pipe(Effect.orDie)
-        }
-        return ctx.snapshot
-      })
+      const snapshotGate = KeyedMutex.makeUnsafe<"snapshot">()
+      const awaitSnapshot = snapshotGate.withLock("snapshot")(
+        Effect.gen(function* () {
+          if (ctx.snapshot !== undefined) return ctx.snapshot
+          if (!snapshotJoined) {
+            snapshotJoined = true
+            ctx.snapshot = yield* Fiber.join(snapshotFiber)
+          } else {
+            ctx.snapshot = yield* snapshot.track().pipe(Effect.orDie)
+          }
+          return ctx.snapshot
+        }),
+      )
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {

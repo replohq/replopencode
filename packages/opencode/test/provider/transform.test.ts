@@ -124,6 +124,39 @@ describe("ProviderTransform.options - setCacheKey", () => {
   })
 })
 
+describe("ProviderTransform.message - anthropic cache TTL split", () => {
+  const model = {
+    id: "anthropic/claude-sonnet-5",
+    providerID: "anthropic",
+    api: { id: "claude-sonnet-5", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+    capabilities: { interleaved: false, reasoning: false, input: {}, output: {} },
+    options: {},
+    headers: {},
+  } as any
+
+  test("system prefix gets the 1h TTL, conversation tail keeps the 5m default", () => {
+    const msgs = [
+      { role: "system", content: "base prompt" },
+      { role: "system", content: "env" },
+      { role: "user", content: [{ type: "text", text: "turn 1" }] },
+      { role: "assistant", content: [{ type: "text", text: "reply 1" }] },
+      { role: "user", content: [{ type: "text", text: "turn 2" }] },
+    ] as any[]
+    const result = ProviderTransform.message(msgs, model, {})
+    const system = result.filter((msg) => msg.role === "system")
+    expect(system).toHaveLength(2)
+    for (const msg of system) {
+      expect(msg.providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral", ttl: "1h" })
+    }
+    const tail = result.slice(-2)
+    for (const msg of tail) {
+      expect(msg.providerOptions?.anthropic?.cacheControl).toEqual({ type: "ephemeral" })
+    }
+    // 1h entries must precede 5m entries in the request; system-first layout guarantees it.
+    expect(result[0]!.role).toBe("system")
+  })
+})
+
 describe("ProviderTransform.options - zai/zhipuai thinking", () => {
   const sessionID = "test-session-123"
 
@@ -2844,6 +2877,7 @@ describe("ProviderTransform.message - cache control on gateway", () => {
       anthropic: {
         cacheControl: {
           type: "ephemeral",
+          ttl: "1h",
         },
       },
       openrouter: {

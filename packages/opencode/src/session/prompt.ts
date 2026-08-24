@@ -1090,6 +1090,8 @@ const layer = Layer.effect(
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
         let firstTokenReqStart: number | undefined
+        let firstRequestStartAt: number | undefined
+        let ttftStep: number | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1292,9 +1294,15 @@ const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
+            // A tool-only first step emits no token, so the ttft pair can capture from a later
+            // step and straddle tool execution; prep_ms and ttft_step exist to keep that honest.
+            if (firstRequestStartAt === undefined && handle.requestStartAt !== undefined) {
+              firstRequestStartAt = handle.requestStartAt
+            }
             if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
               firstTokenAt = handle.firstTokenAt
               firstTokenReqStart = handle.requestStartAt
+              ttftStep = step
             }
 
             if (structured !== undefined) {
@@ -1354,6 +1362,8 @@ const layer = Layer.effect(
             firstTokenAt !== undefined && firstTokenReqStart !== undefined
               ? firstTokenAt - firstTokenReqStart
               : undefined,
+          prep_ms: firstRequestStartAt !== undefined ? firstRequestStartAt - turnStart : undefined,
+          ttft_step: ttftStep,
           turn_ms: Date.now() - turnStart,
           steps: step,
         })

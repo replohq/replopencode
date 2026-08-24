@@ -851,6 +851,10 @@ it.instance("turn.done logs prep_ms from the first request even when ttft captur
     // prep_ms must reflect step 1's request, which started before step 2's first token.
     expect(typeof fields.prep_ms).toBe("number")
     expect(fields.prep_ms!).toBeLessThanOrEqual(fields.ttft_ms!)
+    for (const phase of ["history_ms", "tools_ms", "context_ms", "snapshot_ms"] as const) {
+      expect(typeof fields[phase]).toBe("number")
+      expect(fields[phase]!).toBeGreaterThanOrEqual(0)
+    }
   }),
 )
 

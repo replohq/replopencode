@@ -1092,15 +1092,21 @@ const layer = Layer.effect(
         let firstTokenReqStart: number | undefined
         let firstRequestStartAt: number | undefined
         let ttftStep: number | undefined
+        let historyMs = 0
+        let toolsMs = 0
+        let contextMs = 0
+        let snapshotMs = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
+          const historyStart = Date.now()
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
           )
+          historyMs += Date.now() - historyStart
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
@@ -1232,6 +1238,7 @@ const layer = Layer.effect(
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
 
+            const toolsStart = Date.now()
             const tools = yield* SessionTools.resolve({
               agent,
               session,
@@ -1248,6 +1255,7 @@ const layer = Layer.effect(
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
             )
+            toolsMs += Date.now() - toolsStart
 
             if (lastUser.format?.type === "json_schema") {
               tools["StructuredOutput"] = createStructuredOutputTool({
@@ -1263,6 +1271,7 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            const contextStart = Date.now()
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
@@ -1270,6 +1279,7 @@ const layer = Layer.effect(
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            contextMs += Date.now() - contextStart
             const system = [
               ...env,
               ...instructions,
@@ -1299,6 +1309,7 @@ const layer = Layer.effect(
             if (firstRequestStartAt === undefined && handle.firstRequestStartAt !== undefined) {
               firstRequestStartAt = handle.firstRequestStartAt
             }
+            snapshotMs += handle.snapshotMs
             if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
               firstTokenAt = handle.firstTokenAt
               firstTokenReqStart = handle.requestStartAt
@@ -1364,6 +1375,10 @@ const layer = Layer.effect(
               : undefined,
           prep_ms: firstRequestStartAt !== undefined ? firstRequestStartAt - turnStart : undefined,
           ttft_step: ttftStep,
+          history_ms: historyMs,
+          tools_ms: toolsMs,
+          context_ms: contextMs,
+          snapshot_ms: snapshotMs,
           turn_ms: Date.now() - turnStart,
           steps: step,
         })

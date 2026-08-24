@@ -34,6 +34,7 @@ export interface Handle {
   readonly firstTokenAt: number | undefined
   readonly requestStartAt: number | undefined
   readonly firstRequestStartAt: number | undefined
+  readonly snapshotMs: number
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -77,6 +78,7 @@ interface ProcessorContext extends Input {
   firstTokenAt: number | undefined
   requestStartAt: number | undefined
   firstRequestStartAt: number | undefined
+  snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
 
@@ -105,6 +107,7 @@ const layer = Layer.effect(
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
       // may execute tools internally before emitting start-step events,
       // so capturing inside the event handler can be too late.
+      const snapshotStart = Date.now()
       const initialSnapshot = yield* snapshot.track()
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
@@ -113,6 +116,7 @@ const layer = Layer.effect(
         toolcalls: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
+        snapshotMs: Date.now() - snapshotStart,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
@@ -708,6 +712,9 @@ const layer = Layer.effect(
         },
         get firstRequestStartAt() {
           return ctx.firstRequestStartAt
+        },
+        get snapshotMs() {
+          return ctx.snapshotMs
         },
         updateToolCall,
         completeToolCall,

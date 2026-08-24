@@ -389,6 +389,19 @@ it.instance("does not fall back for protocol tool discovery errors", () =>
   }),
 )
 
+it.instance("failed tool discovery surfaces the underlying error in the status", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer({ capabilities: { tools: {} } })
+    server.state.listToolsError = "boom-tools-list"
+    const mcp = yield* MCP.Service
+    yield* mcp.add("explained-server", remote(server.url))
+
+    const status = (yield* mcp.status())["explained-server"]
+    expect(status?.status).toBe("failed")
+    expect(status && "error" in status ? status.error : undefined).toContain("boom-tools-list")
+  }),
+)
+
 it.instance("disabled server is marked disabled without opening a protocol session", () =>
   Effect.gen(function* () {
     const server = yield* lifecycleServer()

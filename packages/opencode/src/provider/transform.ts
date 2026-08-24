@@ -345,7 +345,15 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     },
   }
 
+  // The stable prefix gets the 1h TTL so idle-gap follow-ups (5min-1h) still hit; the
+  // conversation tail stays on the default 5m so per-step writes avoid the 2x premium.
+  const prefixProviderOptions = {
+    ...providerOptions,
+    anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
+  }
+
   for (const msg of unique([...system, ...final])) {
+    const options = msg.role === "system" && model.providerID === "anthropic" ? prefixProviderOptions : providerOptions
     const useMessageLevelOptions =
       model.providerID === "anthropic" ||
       model.providerID.includes("bedrock") ||
@@ -360,12 +368,12 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
         lastContent.type !== "tool-approval-request" &&
         lastContent.type !== "tool-approval-response"
       ) {
-        lastContent.providerOptions = mergeDeep(lastContent.providerOptions ?? {}, providerOptions)
+        lastContent.providerOptions = mergeDeep(lastContent.providerOptions ?? {}, options)
         continue
       }
     }
 
-    msg.providerOptions = mergeDeep(msg.providerOptions ?? {}, providerOptions)
+    msg.providerOptions = mergeDeep(msg.providerOptions ?? {}, options)
   }
 
   return msgs

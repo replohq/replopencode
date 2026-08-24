@@ -1,8 +1,9 @@
+import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Context, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -33,6 +34,9 @@ export interface Handle {
   readonly message: SessionV1.Assistant
   readonly firstTokenAt: number | undefined
   readonly requestStartAt: number | undefined
+  readonly firstRequestStartAt: number | undefined
+  readonly snapshotMs: number
+  readonly awaitSnapshot: Effect.Effect<string | undefined>
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -75,6 +79,8 @@ interface ProcessorContext extends Input {
   currentText: SessionV1.TextPart | undefined
   firstTokenAt: number | undefined
   requestStartAt: number | undefined
+  firstRequestStartAt: number | undefined
+  snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
 
@@ -100,25 +106,49 @@ const layer = Layer.effect(
     const database = yield* Database.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
-      // Pre-capture snapshot before the LLM stream starts. The AI SDK
-      // may execute tools internally before emitting start-step events,
-      // so capturing inside the event handler can be too late.
-      const initialSnapshot = yield* snapshot.track()
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
         model: input.model,
         toolcalls: {},
         shouldBreak: false,
-        snapshot: initialSnapshot,
+        snapshot: undefined,
+        snapshotMs: 0,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
         firstTokenAt: undefined,
         requestStartAt: undefined,
+        firstRequestStartAt: undefined,
         reasoningMap: {},
       }
       let aborted = false
+
+      // Runs concurrently with the provider request; awaitSnapshot is the barrier
+      // every tool execution and step event takes before touching the result.
+      const snapshotStart = Date.now()
+      const snapshotFiber = yield* snapshot.track().pipe(
+        Effect.tap(() => Effect.sync(() => (ctx.snapshotMs = Date.now() - snapshotStart))),
+        Effect.orDie,
+        Effect.forkIn(scope),
+      )
+      // step-finish clears ctx.snapshot so every step diffs against its own baseline: the
+      // forked fiber serves only the first capture; later steps track fresh, as before.
+      // Serialized so concurrent tool executions share one baseline instead of racing tracks.
+      let snapshotJoined = false
+      const snapshotGate = KeyedMutex.makeUnsafe<"snapshot">()
+      const awaitSnapshot = snapshotGate.withLock("snapshot")(
+        Effect.gen(function* () {
+          if (ctx.snapshot !== undefined) return ctx.snapshot
+          if (!snapshotJoined) {
+            snapshotJoined = true
+            ctx.snapshot = yield* Fiber.join(snapshotFiber)
+          } else {
+            ctx.snapshot = yield* snapshot.track().pipe(Effect.orDie)
+          }
+          return ctx.snapshot
+        }),
+      )
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -429,7 +459,7 @@ const layer = Layer.effect(
             throw new Error(value.message)
 
           case "step-start":
-            if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
+            yield* awaitSnapshot
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -646,6 +676,8 @@ const layer = Layer.effect(
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
             ctx.requestStartAt = Date.now()
+            // Retries re-stamp requestStartAt; keep the first attempt so prep_ms excludes backoff.
+            if (ctx.firstRequestStartAt === undefined) ctx.firstRequestStartAt = ctx.requestStartAt
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
@@ -701,6 +733,13 @@ const layer = Layer.effect(
         get requestStartAt() {
           return ctx.requestStartAt
         },
+        get firstRequestStartAt() {
+          return ctx.firstRequestStartAt
+        },
+        get snapshotMs() {
+          return ctx.snapshotMs
+        },
+        awaitSnapshot,
         updateToolCall,
         completeToolCall,
         process,

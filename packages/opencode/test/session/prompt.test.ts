@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, Option, References } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -810,6 +810,50 @@ it.instance("loop continues when finish is tool-calls", () =>
     if (result.info.role === "assistant") {
       expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
       expect(result.info.finish).toBe("stop")
+    }
+  }),
+)
+
+it.instance("turn.done logs prep_ms from the first request even when ttft captures from a later step", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Turn timing",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.tool("first", { value: "first" })
+    yield* llm.text("second")
+
+    const captured: Array<unknown> = []
+    const capture = Logger.make((options) => {
+      captured.push(options.message)
+    })
+    yield* prompt.loop({ sessionID: session.id }).pipe(
+      Effect.provide(Logger.layer([capture], { mergeWithExisting: true })),
+      Effect.provide(Layer.succeed(References.MinimumLogLevel, "Debug")),
+    )
+
+    const message = captured.find((item) => Array.isArray(item) && item[0] === "turn.done")
+    expect(message).toBeDefined()
+    if (!Array.isArray(message)) return
+    const fields = message[1] as Record<string, number | undefined>
+    expect(fields.steps).toBe(2)
+    // Step 1 was tool-only, so the ttft pair comes from step 2 — the cross-step hazard.
+    expect(fields.ttft_step).toBe(2)
+    // prep_ms must reflect step 1's request, which started before step 2's first token.
+    expect(typeof fields.prep_ms).toBe("number")
+    expect(fields.prep_ms!).toBeLessThanOrEqual(fields.ttft_ms!)
+    for (const phase of ["history_ms", "tools_ms", "context_ms", "snapshot_ms"] as const) {
+      expect(typeof fields[phase]).toBe("number")
+      expect(fields[phase]!).toBeGreaterThanOrEqual(0)
     }
   }),
 )

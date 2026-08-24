@@ -1090,15 +1090,48 @@ const layer = Layer.effect(
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
         let firstTokenReqStart: number | undefined
+        let firstRequestStartAt: number | undefined
+        let ttftStep: number | undefined
+        let historyMs = 0
+        let cachedMsgs: SessionV1.WithParts[] | undefined
+        let toolsMs = 0
+        let contextMs = 0
+        let snapshotMs = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+
+        // Per turn, not per step: an instruction file edited by the turn itself applies next turn.
+        const instructionsStart = Date.now()
+        const instructions = yield* instruction.system().pipe(Effect.orDie)
+        contextMs += Date.now() - instructionsStart
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
-            Effect.provideService(Database.Service, database),
-          )
+          const historyStart = Date.now()
+          let msgs: SessionV1.WithParts[]
+          if (cachedMsgs === undefined) {
+            msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+              Effect.provideService(Database.Service, database),
+            )
+          } else {
+            const newest = cachedMsgs.reduce((max, m) => (m.info.id > max.info.id ? m : max), cachedMsgs[0]!)
+            const fresh = yield* MessageV2.after({
+              sessionID,
+              time: newest.info.time.created,
+              id: newest.info.id,
+            }).pipe(Effect.provideService(Database.Service, database))
+            // Compaction/summary rows change the retained window; recompute it from scratch.
+            const rewritesHistory = fresh.some(
+              (m) => m.parts.some((p) => p.type === "compaction") || (m.info.role === "assistant" && m.info.summary),
+            )
+            msgs = rewritesHistory
+              ? yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+                  Effect.provideService(Database.Service, database),
+                )
+              : [...cachedMsgs, ...fresh]
+          }
+          historyMs += Date.now() - historyStart
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
@@ -1184,6 +1217,10 @@ const layer = Layer.effect(
           }
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
+          // Cache before reminders: apply pushes synthetic parts into the last user message
+          // in place, and re-caching them would duplicate the reminder on every step.
+          const lastUserIndex = msgs.findLastIndex((m) => m.info.role === "user")
+          cachedMsgs = msgs.map((m, i) => (i === lastUserIndex ? { ...m, parts: [...m.parts] } : m))
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1230,6 +1267,7 @@ const layer = Layer.effect(
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
 
+            const toolsStart = Date.now()
             const tools = yield* SessionTools.resolve({
               agent,
               session,
@@ -1246,6 +1284,7 @@ const layer = Layer.effect(
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
             )
+            toolsMs += Date.now() - toolsStart
 
             if (lastUser.format?.type === "json_schema") {
               tools["StructuredOutput"] = createStructuredOutputTool({
@@ -1261,13 +1300,14 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const contextStart = Date.now()
+            const [skills, env, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            contextMs += Date.now() - contextStart
             const system = [
               ...env,
               ...instructions,
@@ -1292,9 +1332,16 @@ const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
+            // A tool-only first step emits no token, so the ttft pair can capture from a later
+            // step and straddle tool execution; prep_ms and ttft_step exist to keep that honest.
+            if (firstRequestStartAt === undefined && handle.firstRequestStartAt !== undefined) {
+              firstRequestStartAt = handle.firstRequestStartAt
+            }
+            snapshotMs += handle.snapshotMs
             if (firstTokenAt === undefined && handle.firstTokenAt !== undefined) {
               firstTokenAt = handle.firstTokenAt
               firstTokenReqStart = handle.requestStartAt
+              ttftStep = step
             }
 
             if (structured !== undefined) {
@@ -1354,6 +1401,12 @@ const layer = Layer.effect(
             firstTokenAt !== undefined && firstTokenReqStart !== undefined
               ? firstTokenAt - firstTokenReqStart
               : undefined,
+          prep_ms: firstRequestStartAt !== undefined ? firstRequestStartAt - turnStart : undefined,
+          ttft_step: ttftStep,
+          history_ms: historyMs,
+          tools_ms: toolsMs,
+          context_ms: contextMs,
+          snapshot_ms: snapshotMs,
           turn_ms: Date.now() - turnStart,
           steps: step,
         })

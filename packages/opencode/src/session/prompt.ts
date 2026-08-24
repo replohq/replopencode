@@ -1115,10 +1115,12 @@ const layer = Layer.effect(
               Effect.provideService(Database.Service, database),
             )
           } else {
-            const maxId = cachedMsgs.reduce((max, m) => (m.info.id > max ? m.info.id : max), cachedMsgs[0]!.info.id)
-            const fresh = yield* MessageV2.after({ sessionID, id: maxId }).pipe(
-              Effect.provideService(Database.Service, database),
-            )
+            const newest = cachedMsgs.reduce((max, m) => (m.info.id > max.info.id ? m : max), cachedMsgs[0]!)
+            const fresh = yield* MessageV2.after({
+              sessionID,
+              time: newest.info.time.created,
+              id: newest.info.id,
+            }).pipe(Effect.provideService(Database.Service, database))
             // Compaction/summary rows change the retained window; recompute it from scratch.
             const rewritesHistory = fresh.some(
               (m) => m.parts.some((p) => p.type === "compaction") || (m.info.role === "assistant" && m.info.summary),
@@ -1215,12 +1217,15 @@ const layer = Layer.effect(
           }
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
+          // Cache before reminders: apply pushes synthetic parts into the last user message
+          // in place, and re-caching them would duplicate the reminder on every step.
+          const lastUserIndex = msgs.findLastIndex((m) => m.info.role === "user")
+          cachedMsgs = msgs.map((m, i) => (i === lastUserIndex ? { ...m, parts: [...m.parts] } : m))
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
             Effect.provideService(Session.Service, sessions),
           )
-          cachedMsgs = msgs
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),

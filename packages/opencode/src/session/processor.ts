@@ -131,9 +131,16 @@ const layer = Layer.effect(
         Effect.orDie,
         Effect.forkIn(scope),
       )
+      // step-finish clears ctx.snapshot so every step diffs against its own baseline: the
+      // forked fiber serves only the first capture; later steps track fresh, as before.
+      let snapshotJoined = false
       const awaitSnapshot = Effect.gen(function* () {
-        if (ctx.snapshot === undefined) {
+        if (ctx.snapshot !== undefined) return ctx.snapshot
+        if (!snapshotJoined) {
+          snapshotJoined = true
           ctx.snapshot = yield* Fiber.join(snapshotFiber)
+        } else {
+          ctx.snapshot = yield* snapshot.track().pipe(Effect.orDie)
         }
         return ctx.snapshot
       })

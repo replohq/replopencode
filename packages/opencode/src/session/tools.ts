@@ -404,6 +404,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       run.promise(
         Effect.gen(function* () {
           const ctx = context(args, opts)
+          // MCP tools can mutate the worktree too (workspace-backed files); same barrier as builtins.
+          yield* input.processor.awaitSnapshot
           yield* plugin.trigger(
             "tool.execute.before",
             { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },

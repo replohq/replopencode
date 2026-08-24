@@ -93,6 +93,9 @@ const part = (row: typeof PartTable.$inferSelect) =>
     messageID: row.message_id,
   }) as Part
 
+const newer = (row: Cursor) =>
+  or(gt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), gt(MessageTable.id, row.id)))
+
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
@@ -490,14 +493,18 @@ export function stream(sessionID: SessionID) {
   })
 }
 
-/** Messages created after the given id; ids are monotonic per session (MessageID.ascending). */
-export const after = Effect.fn("MessageV2.after")(function* (input: { sessionID: SessionID; id: MessageID }) {
+/** Messages after the (time_created, id) cursor; tuple-shaped like older() so the session index serves it. */
+export const after = Effect.fn("MessageV2.after")(function* (input: {
+  sessionID: SessionID
+  time: number
+  id: MessageID
+}) {
   const { db } = yield* Database.Service
   const rows = yield* db
     .select()
     .from(MessageTable)
-    .where(and(eq(MessageTable.session_id, input.sessionID), gt(MessageTable.id, input.id)))
-    .orderBy(MessageTable.id)
+    .where(and(eq(MessageTable.session_id, input.sessionID), newer(input)))
+    .orderBy(MessageTable.time_created, MessageTable.id)
     .all()
     .pipe(Effect.orDie)
   return yield* hydrate(db, rows)

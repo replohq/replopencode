@@ -1099,6 +1099,11 @@ const layer = Layer.effect(
         let snapshotMs = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
+        // Per turn, not per step: an instruction file edited by the turn itself applies next turn.
+        const instructionsStart = Date.now()
+        const instructions = yield* instruction.system().pipe(Effect.orDie)
+        contextMs += Date.now() - instructionsStart
+
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
@@ -1291,10 +1296,9 @@ const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const contextStart = Date.now()
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])

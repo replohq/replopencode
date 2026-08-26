@@ -1087,6 +1087,9 @@ export function options(input: {
 }): Record<string, any> {
   const result: Record<string, any> = {}
 
+  // A configured key coarser than the session lets related sessions share one warm provider cache.
+  const cacheKey = input.providerOptions?.promptCacheKey || input.sessionID
+
   if (
     input.model.api.npm === "@ai-sdk/google-vertex/anthropic" ||
     (!input.model.api.id.includes("claude") && input.model.api.npm === "@ai-sdk/anthropic")
@@ -1106,7 +1109,7 @@ export function options(input: {
 
   if (input.model.api.npm === "@ai-sdk/azure") {
     result["store"] = false
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
@@ -1136,7 +1139,7 @@ export function options(input: {
   }
 
   if (input.model.providerID === "openai" || input.providerOptions?.setCacheKey) {
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.api.npm === "@ai-sdk/google" || input.model.api.npm === "@ai-sdk/google-vertex") {
@@ -1215,18 +1218,18 @@ export function options(input: {
     }
 
     if (input.model.providerID.startsWith("opencode")) {
-      result["promptCacheKey"] = input.sessionID
+      result["promptCacheKey"] = cacheKey
       result["include"] = INCLUDE_ENCRYPTED_REASONING
       result["reasoningSummary"] = "auto"
     }
   }
 
   if (input.model.providerID === "venice") {
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.providerID === "openrouter") {
-    result["prompt_cache_key"] = input.sessionID
+    result["prompt_cache_key"] = cacheKey
   }
   if (input.model.api.npm === "@ai-sdk/gateway") {
     result["gateway"] = {

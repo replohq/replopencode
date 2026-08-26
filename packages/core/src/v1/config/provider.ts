@@ -92,6 +92,10 @@ export const Info = Schema.Struct({
         setCacheKey: Schema.optional(Schema.Boolean).annotate({
           description: "Enable promptCacheKey for this provider (default false)",
         }),
+        promptCacheKey: Schema.optional(Schema.String).annotate({
+          description:
+            "Explicit prompt cache key for providers that route caching by key (e.g. OpenAI prompt_cache_key). Overrides the per-session default so related sessions share a cache.",
+        }),
         timeout: Schema.optional(
           Schema.Union([PositiveInt, Schema.Literal(false)]).annotate({
             description: "Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.",

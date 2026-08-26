@@ -87,6 +87,87 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBe(sessionID)
   })
 
+  test("should prefer configured promptCacheKey over the session default for openai", () => {
+    const openaiModel = {
+      ...mockModel,
+      providerID: "openai",
+      api: {
+        id: "gpt-4",
+        url: "https://api.openai.com",
+        npm: "@ai-sdk/openai",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: openaiModel,
+      sessionID,
+      providerOptions: { promptCacheKey: "user-42" },
+    })
+    expect(result.promptCacheKey).toBe("user-42")
+  })
+
+  test("should prefer configured promptCacheKey when setCacheKey opts a provider in", () => {
+    const result = ProviderTransform.options({
+      model: mockModel,
+      sessionID,
+      providerOptions: { setCacheKey: true, promptCacheKey: "user-42" },
+    })
+    expect(result.promptCacheKey).toBe("user-42")
+  })
+
+  test("should fall back to sessionID when configured promptCacheKey is empty", () => {
+    const openaiModel = {
+      ...mockModel,
+      providerID: "openai",
+      api: {
+        id: "gpt-4",
+        url: "https://api.openai.com",
+        npm: "@ai-sdk/openai",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: openaiModel,
+      sessionID,
+      providerOptions: { promptCacheKey: "" },
+    })
+    expect(result.promptCacheKey).toBe(sessionID)
+  })
+
+  test("should use configured promptCacheKey for openrouter prompt_cache_key", () => {
+    const openrouterModel = {
+      ...mockModel,
+      providerID: "openrouter",
+      api: {
+        id: "openai/gpt-4",
+        url: "https://openrouter.ai",
+        npm: "@openrouter/ai-sdk-provider",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: openrouterModel,
+      sessionID,
+      providerOptions: { promptCacheKey: "user-42" },
+    })
+    expect(result.prompt_cache_key).toBe("user-42")
+  })
+
+  test("should use configured promptCacheKey for azure", () => {
+    const azureModel = {
+      ...mockModel,
+      providerID: "azure",
+      api: {
+        id: "gpt-4",
+        url: "https://azure.com",
+        npm: "@ai-sdk/azure",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: azureModel,
+      sessionID,
+      providerOptions: { promptCacheKey: "user-42" },
+    })
+    expect(result.promptCacheKey).toBe("user-42")
+  })
+
   test("should set store=false for openai provider", () => {
     const openaiModel = {
       ...mockModel,

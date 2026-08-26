@@ -1087,6 +1087,15 @@ export function options(input: {
 }): Record<string, any> {
   const result: Record<string, any> = {}
 
+  // Providers route cache-key traffic per machine (OpenAI overflows a key above
+  // ~15 req/min), so a key coarser than the session lets a user's sessions and
+  // forks share one warm cache. Configured via provider options; falls back to
+  // the per-session default.
+  const cacheKey =
+    typeof input.providerOptions?.promptCacheKey === "string" && input.providerOptions.promptCacheKey.length > 0
+      ? input.providerOptions.promptCacheKey
+      : input.sessionID
+
   if (
     input.model.api.npm === "@ai-sdk/google-vertex/anthropic" ||
     (!input.model.api.id.includes("claude") && input.model.api.npm === "@ai-sdk/anthropic")
@@ -1106,7 +1115,7 @@ export function options(input: {
 
   if (input.model.api.npm === "@ai-sdk/azure") {
     result["store"] = false
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
@@ -1136,7 +1145,7 @@ export function options(input: {
   }
 
   if (input.model.providerID === "openai" || input.providerOptions?.setCacheKey) {
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.api.npm === "@ai-sdk/google" || input.model.api.npm === "@ai-sdk/google-vertex") {
@@ -1215,18 +1224,18 @@ export function options(input: {
     }
 
     if (input.model.providerID.startsWith("opencode")) {
-      result["promptCacheKey"] = input.sessionID
+      result["promptCacheKey"] = cacheKey
       result["include"] = INCLUDE_ENCRYPTED_REASONING
       result["reasoningSummary"] = "auto"
     }
   }
 
   if (input.model.providerID === "venice") {
-    result["promptCacheKey"] = input.sessionID
+    result["promptCacheKey"] = cacheKey
   }
 
   if (input.model.providerID === "openrouter") {
-    result["prompt_cache_key"] = input.sessionID
+    result["prompt_cache_key"] = cacheKey
   }
   if (input.model.api.npm === "@ai-sdk/gateway") {
     result["gateway"] = {

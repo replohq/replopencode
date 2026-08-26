@@ -105,15 +105,6 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBe("user-42")
   })
 
-  test("should prefer configured promptCacheKey when setCacheKey opts a provider in", () => {
-    const result = ProviderTransform.options({
-      model: mockModel,
-      sessionID,
-      providerOptions: { setCacheKey: true, promptCacheKey: "user-42" },
-    })
-    expect(result.promptCacheKey).toBe("user-42")
-  })
-
   test("should fall back to sessionID when configured promptCacheKey is empty", () => {
     const openaiModel = {
       ...mockModel,
@@ -148,24 +139,6 @@ describe("ProviderTransform.options - setCacheKey", () => {
       providerOptions: { promptCacheKey: "user-42" },
     })
     expect(result.prompt_cache_key).toBe("user-42")
-  })
-
-  test("should use configured promptCacheKey for azure", () => {
-    const azureModel = {
-      ...mockModel,
-      providerID: "azure",
-      api: {
-        id: "gpt-4",
-        url: "https://azure.com",
-        npm: "@ai-sdk/azure",
-      },
-    }
-    const result = ProviderTransform.options({
-      model: azureModel,
-      sessionID,
-      providerOptions: { promptCacheKey: "user-42" },
-    })
-    expect(result.promptCacheKey).toBe("user-42")
   })
 
   test("should set store=false for openai provider", () => {

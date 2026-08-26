@@ -1087,14 +1087,8 @@ export function options(input: {
 }): Record<string, any> {
   const result: Record<string, any> = {}
 
-  // Providers route cache-key traffic per machine (OpenAI overflows a key above
-  // ~15 req/min), so a key coarser than the session lets a user's sessions and
-  // forks share one warm cache. Configured via provider options; falls back to
-  // the per-session default.
-  const cacheKey =
-    typeof input.providerOptions?.promptCacheKey === "string" && input.providerOptions.promptCacheKey.length > 0
-      ? input.providerOptions.promptCacheKey
-      : input.sessionID
+  // A configured key coarser than the session lets related sessions share one warm provider cache.
+  const cacheKey = input.providerOptions?.promptCacheKey || input.sessionID
 
   if (
     input.model.api.npm === "@ai-sdk/google-vertex/anthropic" ||

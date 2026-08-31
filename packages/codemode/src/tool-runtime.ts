@@ -673,7 +673,42 @@ const namespaceKeys = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): Rea
   return Object.keys(value)
 }
 
-const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<R> | Definition<R> => {
+/** Walks a path to a callable tool, returning undefined instead of throwing when it misses. */
+const lookup = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<R> | Definition<R> | undefined => {
+  let value: HostTool<R> | Definition<R> | HostTools<R> = tools
+  for (const segment of path) {
+    if (
+      isBlockedMember(segment) ||
+      typeof value === "function" ||
+      isDefinition(value) ||
+      !Object.hasOwn(value, segment)
+    )
+      return undefined
+    value = value[segment]
+  }
+  return typeof value === "function" || isDefinition(value) ? value : undefined
+}
+
+type Resolved<R> = { readonly tool: HostTool<R> | Definition<R>; readonly path: ReadonlyArray<string> }
+
+/** Real tools a missed path plausibly meant: its namespace repeated inside the leaf, or the leaf under another namespace. */
+const recoveryCandidates = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): Array<Resolved<R>> => {
+  const leaf = path.at(-1)
+  const parent = path.at(-2)
+  if (leaf === undefined || parent === undefined) return []
+  const guesses: Array<ReadonlyArray<string>> = []
+  if (leaf.startsWith(`${parent}_`)) guesses.push([...path.slice(0, -1), leaf.slice(parent.length + 1)])
+  if (path.length === 2) {
+    for (const key of Object.keys(tools)) if (key !== parent) guesses.push([key, leaf])
+  }
+  return guesses.flatMap((guess) => {
+    const tool = lookup(tools, guess)
+    return tool === undefined ? [] : [{ tool, path: guess }]
+  })
+}
+
+/** Resolves a written path to its tool, recovering a unique convention miss under the real path. */
+const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): Resolved<R> => {
   let value: HostTool<R> | Definition<R> | HostTools<R> = tools
 
   for (const segment of path) {
@@ -683,7 +718,12 @@ const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<
       isDefinition(value) ||
       !Object.hasOwn(value, segment)
     ) {
+      const candidates = recoveryCandidates(tools, path)
+      if (candidates.length === 1 && candidates[0] !== undefined) return candidates[0]
       throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, [
+        ...(candidates.length > 1
+          ? [`Did you mean ${candidates.map((candidate) => `tools.${candidate.path.join(".")}`).join(" or ")}?`]
+          : []),
         "Use tools.$codemode.search({ query }) to find available described tools.",
       ])
     }
@@ -694,7 +734,7 @@ const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<
     throw new ToolRuntimeError("UnknownTool", `Tool '${path.join(".")}' is not callable.`)
   }
 
-  return value
+  return { tool: value, path }
 }
 
 export type ToolRuntime<R = never> = {
@@ -758,7 +798,9 @@ export const make = <R>(
     keys: (path) => namespaceKeys(callableTools, path),
     invoke: (path, args) =>
       Effect.gen(function* () {
-        const name = path.join(".")
+        const { tool, path: resolvedPath } = resolve(callableTools, path)
+        // The resolved path, not the written one, so telemetry names the tool that actually ran.
+        const name = resolvedPath.join(".")
         const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`)))
         const call = { name }
         const recordAndObserve = (input: unknown) =>
@@ -766,7 +808,6 @@ export const make = <R>(
             recordCall(call)
             return calls.length - 1
           }).pipe(Effect.tap((index) => hooks?.onToolCallStart?.({ index, name, input }) ?? Effect.void))
-        const tool = resolve(callableTools, path)
         let describedInput: unknown
         if (isDefinition(tool)) {
           if (externalArgs.length !== 1)

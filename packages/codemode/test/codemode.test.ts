@@ -1161,3 +1161,56 @@ describe("CodeMode public contract", () => {
     expect(() => CodeMode.make({ tools: { $codemode: { lookup } } })).toThrow(/reserved for CodeMode discovery tools/)
   })
 })
+
+describe("tool name recovery", () => {
+  const echo = Tool.make({
+    description: "Echo the value",
+    input: Schema.Struct({ value: Schema.String }),
+    output: Schema.String,
+    run: ({ value }) => Effect.succeed(value),
+  })
+  const tools = {
+    bedrock: { generate_image: echo, bedrock_database_query_records: echo, shopify_products_search: echo },
+    alpha: { shared_tool: echo },
+    beta: { shared_tool: echo },
+  }
+
+  test("recovers convention-missed tool names and records the tool that actually ran", async () => {
+    const calls: Array<string> = []
+    const runtime = CodeMode.make({
+      tools,
+      onToolCallStart: ({ name }) =>
+        Effect.sync(() => {
+          calls.push(name)
+        }),
+    })
+
+    const result = await Effect.runPromise(
+      runtime.execute(`return [
+        await tools.bedrock.bedrock_generate_image({ value: "a" }),
+        await tools.shopify.shopify_products_search({ value: "b" }),
+        await tools.bedrock.bedrock_database_query_records({ value: "c" }),
+      ]`),
+    )
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toStrictEqual(["a", "b", "c"])
+    expect(calls).toStrictEqual([
+      "bedrock.generate_image",
+      "bedrock.shopify_products_search",
+      "bedrock.bedrock_database_query_records",
+    ])
+  })
+
+  test("refuses to guess between equally plausible tools and names them", async () => {
+    const result = await Effect.runPromise(
+      CodeMode.execute({ tools, code: `return await tools.gamma.shared_tool({ value: "x" })` }),
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.kind).toBe("UnknownTool")
+      expect(result.error.suggestions?.join(" ")).toContain("tools.alpha.shared_tool or tools.beta.shared_tool")
+    }
+  })
+})

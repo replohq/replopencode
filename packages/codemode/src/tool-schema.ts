@@ -283,12 +283,34 @@ export const outputTypeScript = <R>(definition: Definition<R>, pretty = false): 
       ? toTypeScript(definition.output, true, pretty)
       : jsonSchemaToTypeScript(definition.output, pretty)
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+/** Parses a JSON string standing in for a declared object/array (e.g. `args: "{}"`); every other value is untouched. */
+const decodeJsonString = (value: unknown, schema: JsonSchema | undefined): unknown => {
+  if (typeof value !== "string" || (schema?.type !== "object" && schema?.type !== "array")) return value
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (schema.type === "array" ? Array.isArray(parsed) : isRecord(parsed)) return parsed
+  } catch {
+    // not JSON: keep the original string
+  }
+  return value
+}
+
 /**
- * Decodes tool input before `run` is invoked. Effect Schemas validate (throwing on failure);
- * JSON-Schema-described inputs pass through unvalidated (render-only).
+ * Decodes tool input before `run` is invoked. Effect Schemas validate (throwing on failure); JSON-Schema
+ * inputs pass through unvalidated (render-only), after decoding JSON strings standing in for declared objects/arrays.
  */
-export const decodeInput = <R>(definition: Definition<R>, value: unknown): unknown =>
-  isEffectSchema(definition.input) ? Schema.decodeUnknownSync(definition.input)(value) : value
+export const decodeInput = <R>(definition: Definition<R>, value: unknown): unknown => {
+  if (isEffectSchema(definition.input)) return Schema.decodeUnknownSync(definition.input)(value)
+  const decoded = decodeJsonString(value, definition.input)
+  const properties = definition.input.properties
+  if (properties === undefined || !isRecord(decoded)) return decoded
+  return Object.fromEntries(
+    Object.entries(decoded).map(([key, entry]) => [key, decodeJsonString(entry, properties[key])]),
+  )
+}
 
 /**
  * Decodes a tool result before it is exposed to the program. Effect Schemas validate and

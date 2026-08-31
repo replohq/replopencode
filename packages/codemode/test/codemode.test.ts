@@ -437,6 +437,38 @@ describe("CodeMode schema flexibility", () => {
     expect(observed).toStrictEqual([{ id: 42 }])
   })
 
+  test("decodes JSON-string input where the schema declares an object or array", async () => {
+    const observed: Array<unknown> = []
+    const call = Tool.make({
+      description: "Invoke a proxied tool",
+      input: {
+        type: "object",
+        properties: {
+          args: { type: "object" },
+          tags: { type: "array", items: { type: "string" } },
+          body: { type: "string" },
+          broken: { type: "object" },
+        },
+      },
+      run: (input) =>
+        Effect.sync(() => {
+          observed.push(input)
+          return { ok: true }
+        }),
+    })
+    const runtime = CodeMode.make({ tools: { proxy: { call } } })
+
+    await Effect.runPromise(
+      runtime.execute(`return await tools.proxy.call({ args: "{}", tags: '["a"]', body: "{}", broken: "not json" })`),
+    )
+    await Effect.runPromise(runtime.execute(`return await tools.proxy.call('{"args": {"port": 3000}}')`))
+
+    expect(observed).toStrictEqual([
+      { args: {}, tags: ["a"], body: "{}", broken: "not json" },
+      { args: { port: 3000 } },
+    ])
+  })
+
   test("renders JSON Schema outputs and $defs references", async () => {
     const lookup = Tool.make({
       description: "Look up a user",

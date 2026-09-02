@@ -358,6 +358,34 @@ describe("code mode execute", () => {
     expect(output.output).toBe("caught: server exploded")
   })
 
+  test("retries an MCP call once with decoded JSON-string args after the server rejects a string for an object", async () => {
+    const seen: unknown[] = []
+    const asked: unknown[] = []
+    const permissionCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req)) }
+    const tool = await build({
+      devtools_call: mcpTool(
+        "call",
+        (args) => {
+          seen.push(args.args)
+          if (typeof args.args === "string")
+            throw new Error(
+              'MCP error -32603: Invalid argument \'args\': [{"expected": "object", "received": "string"}]',
+            )
+          return { content: [{ type: "text", text: "ok" }] }
+        },
+        { type: "object", properties: { args: { type: "string" } } },
+      ),
+    })
+
+    const output = await Effect.runPromise(
+      tool.execute({ code: 'return await tools.devtools.call({ args: "{}" })' }, permissionCtx),
+    )
+
+    expect(output.metadata.error).toBeUndefined()
+    expect(seen).toStrictEqual(["{}", {}])
+    expect(asked).toHaveLength(1)
+  })
+
   test("asks permission before each child tool call", async () => {
     const asked: unknown[] = []
     const permissionCtx: Tool.Context = { ...ctx, ask: (req) => Effect.sync(() => void asked.push(req)) }

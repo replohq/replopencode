@@ -1177,7 +1177,10 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
       tier: item.tier,
     }))
   }
-  if (c?.context_over_200k) {
+  // NOTE (Gabe, 2026-09-02): models.dev spells a model's single long-context tier as
+  // context_over_200k even when its tiers put the threshold elsewhere (272K for gpt-5.x), and
+  // Session.getUsage falls back to this field below the tier size, so tiers own the threshold.
+  if (c?.context_over_200k && !result.tiers?.length) {
     result.experimentalOver200K = {
       cache: {
         read: c.context_over_200k.cache_read ?? 0,
@@ -1422,6 +1425,9 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            // NOTE (Gabe, 2026-09-02): a config context_over_200k prices everything above 200K, but
+            // Session.getUsage consults tiers first, so it rides as a 200K tier above the catalog's lower ones.
+            const over200k = model.cost?.context_over_200k ? cost(model.cost).experimentalOver200K : undefined
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1468,6 +1474,14 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
+                // NOTE (Gabe, 2026-09-02): config cannot express tiers, so an entry that only names a model keeps the catalog's.
+                tiers: over200k
+                  ? [
+                      ...(existingModel?.cost?.tiers ?? []).filter((item) => item.tier.size < 200_000),
+                      { ...over200k, tier: { type: "context", size: 200_000 } },
+                    ]
+                  : existingModel?.cost?.tiers,
+                experimentalOver200K: over200k ?? existingModel?.cost?.experimentalOver200K,
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {

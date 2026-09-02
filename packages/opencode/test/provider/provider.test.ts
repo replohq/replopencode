@@ -15,6 +15,8 @@ import { Config } from "@/config/config"
 import { Env } from "../../src/env"
 import { Plugin } from "../../src/plugin/index"
 import { Provider } from "@/provider/provider"
+import { Session } from "@/session/session"
+import { Usage } from "@opencode-ai/llm"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Filesystem } from "@/util/filesystem"
@@ -929,6 +931,95 @@ it.instance(
       provider: {
         anthropic: {
           models: { "claude-sonnet-4-20250514": { cost: { input: 999, output: 888 } } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config entry that only names a model keeps the database over-200k pricing",
+  Effect.gen(function* () {
+    yield* set("OPENROUTER_API_KEY", "test-api-key")
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    expect(model.cost.input).toBe(2.5)
+    expect(model.cost.tiers).toEqual([
+      { input: 5, output: 22.5, cache: { read: 0.5, write: 0 }, tier: { type: "context", size: 272_000 } },
+    ])
+    // NOTE (Gabe, 2026-09-02): OpenRouter's override for gpt-5.x starts at 272K, so the legacy
+    // over-200k field must not price the 200K-272K band at the tier rate.
+    expect(model.cost.experimentalOver200K).toBeUndefined()
+    const price = (inputTokens: number) =>
+      Session.getUsage({ model, usage: new Usage({ inputTokens, outputTokens: 0, totalTokens: inputTokens }) }).cost
+    expect(price(250_000)).toBeCloseTo(0.625, 6)
+    expect(price(300_000)).toBeCloseTo(1.5, 6)
+  }),
+  {
+    config: {
+      provider: {
+        openrouter: {
+          models: { "openai/gpt-5.4": { options: {} } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config over-200k cost overrides the database over-200k pricing",
+  Effect.gen(function* () {
+    yield* set("OPENROUTER_API_KEY", "test-api-key")
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 7,
+      output: 30,
+      cache: { read: 0.7, write: 0 },
+    })
+    // NOTE (Gabe, 2026-09-02): the catalog's 272K tier would otherwise outrank the configured
+    // over-200k price in Session.getUsage for every context above 272K.
+    expect(model.cost.tiers).toEqual([
+      { input: 7, output: 30, cache: { read: 0.7, write: 0 }, tier: { type: "context", size: 200_000 } },
+    ])
+    const priced = Session.getUsage({
+      model,
+      usage: new Usage({ inputTokens: 300_000, outputTokens: 0, totalTokens: 300_000 }),
+    })
+    expect(priced.cost).toBeCloseTo(2.1, 6)
+  }),
+  {
+    config: {
+      provider: {
+        openrouter: {
+          models: { "openai/gpt-5.4": { cost: { input: 3.5, output: 15, context_over_200k: { input: 7, output: 30, cache_read: 0.7 } } } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config over-200k cost keeps the database tiers below 200k",
+  Effect.gen(function* () {
+    yield* set("OPENROUTER_API_KEY", "test-api-key")
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("openrouter")].models["x-ai/grok-4"]
+    expect(model.cost.tiers).toEqual([
+      { input: 6, output: 30, cache: { read: 0, write: 0 }, tier: { type: "context", size: 128_000 } },
+      { input: 9, output: 45, cache: { read: 0, write: 0 }, tier: { type: "context", size: 200_000 } },
+    ])
+    const price = (inputTokens: number) =>
+      Session.getUsage({ model, usage: new Usage({ inputTokens, outputTokens: 0, totalTokens: inputTokens }) }).cost
+    expect(price(100_000)).toBeCloseTo(0.3, 6)
+    expect(price(150_000)).toBeCloseTo(0.9, 6)
+    expect(price(300_000)).toBeCloseTo(2.7, 6)
+  }),
+  {
+    config: {
+      provider: {
+        openrouter: {
+          models: { "x-ai/grok-4": { cost: { input: 3, output: 15, context_over_200k: { input: 9, output: 45 } } } },
         },
       },
     },

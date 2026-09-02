@@ -1470,7 +1470,10 @@ const layer = Layer.effect(
                 },
                 // Config cannot express tiers, and a config entry that only names a model
                 // (the common case) must not price its long-context steps at the base rate.
-                tiers: existingModel?.cost?.tiers,
+                // A config `context_over_200k` governs every context above 200K, so the
+                // catalog's context tiers (which session.ts consults first) are dropped
+                // rather than letting them shadow the configured price above their size.
+                tiers: model?.cost?.context_over_200k ? undefined : existingModel?.cost?.tiers,
                 experimentalOver200K: model?.cost?.context_over_200k
                   ? {
                       input: model.cost.context_over_200k.input,

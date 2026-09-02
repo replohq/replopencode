@@ -15,6 +15,8 @@ import { Config } from "@/config/config"
 import { Env } from "../../src/env"
 import { Plugin } from "../../src/plugin/index"
 import { Provider } from "@/provider/provider"
+import { Session } from "@/session/session"
+import { Usage } from "@opencode-ai/llm"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Filesystem } from "@/util/filesystem"
@@ -971,6 +973,14 @@ it.instance(
       output: 30,
       cache: { read: 0.7, write: 0 },
     })
+    // The catalog's 272K context tier would otherwise outrank the configured
+    // over-200k price in Session.getUsage for every context above 272K.
+    expect(model.cost.tiers).toBeUndefined()
+    const priced = Session.getUsage({
+      model,
+      usage: new Usage({ inputTokens: 300_000, outputTokens: 0, totalTokens: 300_000 }),
+    })
+    expect(priced.cost).toBeCloseTo(2.1, 6)
   }),
   {
     config: {

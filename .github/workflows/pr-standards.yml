@@ -153,6 +153,8 @@ jobs:
             console.log('PR meets all standards');
 
   check-compliance:
+    # Upstream-only: this labels needs:compliance and warns of the 2-hour auto-close
+    if: github.repository == 'anomalyco/opencode'
     runs-on: ubuntu-latest
     permissions:
       contents: read

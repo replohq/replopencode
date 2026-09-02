@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   close-non-compliant:
+    # Upstream-only: do not auto-close PRs/issues in the fork
+    if: github.repository == 'anomalyco/opencode'
     runs-on: ubuntu-latest
     steps:
       - name: Close non-compliant issues and PRs after 2 hours

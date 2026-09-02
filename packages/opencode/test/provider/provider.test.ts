@@ -948,7 +948,7 @@ it.instance(
     expect(model.cost.tiers).toEqual([
       { input: 5, output: 22.5, cache: { read: 0.5, write: 0 }, tier: { type: "context", size: 272_000 } },
     ])
-    // OpenRouter bills gpt-5.x at base until 272K, so the legacy over-200k field must not outrank the tier.
+    // NOTE (Gabe, 2026-09-02): OpenRouter bills gpt-5.x at base until 272K, so the legacy over-200k field must not outrank the tier.
     expect(model.cost.experimentalOver200K).toBeUndefined()
     expect(price(model, 250_000)).toBeCloseTo(0.625, 6)
     expect(price(model, 300_000)).toBeCloseTo(1.5, 6)

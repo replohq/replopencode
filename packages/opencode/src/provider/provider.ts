@@ -1422,6 +1422,9 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            // NOTE: a config context_over_200k prices everything above 200K itself. Session.getUsage
+            // consults tiers first, so it is carried as a 200K tier above any catalog tiers below it.
+            const over200k = model.cost?.context_over_200k ? cost(model.cost).experimentalOver200K : undefined
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1468,13 +1471,14 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
-                // Config cannot express tiers, so a config entry that only names a model keeps the
-                // catalog's. A config context_over_200k prices everything above 200K itself, and
-                // Session.getUsage consults tiers first, so it must not inherit tiers that shadow it.
-                tiers: model?.cost?.context_over_200k ? undefined : existingModel?.cost?.tiers,
-                experimentalOver200K: model?.cost?.context_over_200k
-                  ? cost(model.cost).experimentalOver200K
-                  : existingModel?.cost?.experimentalOver200K,
+                // Config cannot express tiers, so a config entry that only names a model keeps the catalog's.
+                tiers: over200k
+                  ? [
+                      ...(existingModel?.cost?.tiers ?? []).filter((item) => item.tier.size < 200_000),
+                      { ...over200k, tier: { type: "context", size: 200_000 } },
+                    ]
+                  : existingModel?.cost?.tiers,
+                experimentalOver200K: over200k ?? existingModel?.cost?.experimentalOver200K,
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {

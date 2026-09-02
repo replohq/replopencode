@@ -1177,7 +1177,10 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
       tier: item.tier,
     }))
   }
-  if (c?.context_over_200k) {
+  // NOTE: models.dev spells a model's single long-context tier as context_over_200k even when
+  // its tiers put the threshold elsewhere (272K for gpt-5.x). Session.getUsage falls back to
+  // this field below the tier size, so the tiers own the threshold whenever they exist.
+  if (c?.context_over_200k && !result.tiers?.length) {
     result.experimentalOver200K = {
       cache: {
         read: c.context_over_200k.cache_read ?? 0,

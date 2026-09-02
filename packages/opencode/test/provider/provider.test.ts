@@ -944,12 +944,16 @@ it.instance(
     const providers = yield* list
     const model = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
     expect(model.cost.input).toBe(2.5)
-    expect(model.cost.experimentalOver200K).toEqual({
-      input: 5,
-      output: 22.5,
-      cache: { read: 0.5, write: 0 },
-    })
-    expect(model.cost.tiers?.[0]?.tier).toEqual({ type: "context", size: 272_000 })
+    expect(model.cost.tiers).toEqual([
+      { input: 5, output: 22.5, cache: { read: 0.5, write: 0 }, tier: { type: "context", size: 272_000 } },
+    ])
+    // OpenRouter's override for gpt-5.x starts at 272K, so the legacy over-200k field must
+    // not price the 200K-272K band at the tier rate.
+    expect(model.cost.experimentalOver200K).toBeUndefined()
+    const price = (inputTokens: number) =>
+      Session.getUsage({ model, usage: new Usage({ inputTokens, outputTokens: 0, totalTokens: inputTokens }) }).cost
+    expect(price(250_000)).toBeCloseTo(0.625, 6)
+    expect(price(300_000)).toBeCloseTo(1.5, 6)
   }),
   {
     config: {

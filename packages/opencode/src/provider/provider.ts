@@ -1157,39 +1157,19 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Pr
 
 export const use = serviceUse(Service)
 
-function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
-  const result: Model["cost"] = {
+function price(c: { input?: number; output?: number; cache_read?: number; cache_write?: number } | undefined) {
+  return {
     input: c?.input ?? 0,
     output: c?.output ?? 0,
-    cache: {
-      read: c?.cache_read ?? 0,
-      write: c?.cache_write ?? 0,
-    },
+    cache: { read: c?.cache_read ?? 0, write: c?.cache_write ?? 0 },
   }
-  if (c?.tiers) {
-    result.tiers = c.tiers.map((item) => ({
-      input: item.input,
-      output: item.output,
-      cache: {
-        read: item.cache_read ?? 0,
-        write: item.cache_write ?? 0,
-      },
-      tier: item.tier,
-    }))
-  }
-  // NOTE (Gabe, 2026-09-02): models.dev spells a model's single long-context tier as
-  // context_over_200k even when its tiers put the threshold elsewhere (272K for gpt-5.x), and
-  // Session.getUsage falls back to this field below the tier size, so tiers own the threshold.
-  if (c?.context_over_200k && !result.tiers?.length) {
-    result.experimentalOver200K = {
-      cache: {
-        read: c.context_over_200k.cache_read ?? 0,
-        write: c.context_over_200k.cache_write ?? 0,
-      },
-      input: c.context_over_200k.input,
-      output: c.context_over_200k.output,
-    }
-  }
+}
+
+function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
+  const result: Model["cost"] = price(c)
+  if (c?.tiers) result.tiers = c.tiers.map((item) => ({ ...price(item), tier: item.tier }))
+  // NOTE (Gabe, 2026-09-02): models.dev keeps context_over_200k even when tiers put the threshold elsewhere (272K for gpt-5.x).
+  if (c?.context_over_200k && !c.tiers?.length) result.experimentalOver200K = price(c.context_over_200k)
   return result
 }
 
@@ -1425,9 +1405,7 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
-            // NOTE (Gabe, 2026-09-02): a config context_over_200k prices everything above 200K, but
-            // Session.getUsage consults tiers first, so it rides as a 200K tier above the catalog's lower ones.
-            const over200k = model.cost?.context_over_200k ? cost(model.cost).experimentalOver200K : undefined
+            const over200K = model.cost?.context_over_200k && price(model.cost.context_over_200k)
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1474,14 +1452,14 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
-                // NOTE (Gabe, 2026-09-02): config cannot express tiers, so an entry that only names a model keeps the catalog's.
-                tiers: over200k
+                // NOTE (Gabe, 2026-09-02): Session.getUsage reads tiers before experimentalOver200K, so a config price rides as the 200K tier.
+                tiers: over200K
                   ? [
                       ...(existingModel?.cost?.tiers ?? []).filter((item) => item.tier.size < 200_000),
-                      { ...over200k, tier: { type: "context", size: 200_000 } },
+                      { ...over200K, tier: { type: "context", size: 200_000 } },
                     ]
                   : existingModel?.cost?.tiers,
-                experimentalOver200K: over200k ?? existingModel?.cost?.experimentalOver200K,
+                experimentalOver200K: over200K ? undefined : existingModel?.cost?.experimentalOver200K,
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {

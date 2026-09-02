@@ -936,6 +936,54 @@ it.instance(
 )
 
 it.instance(
+  "config entry that only names a model keeps the database over-200k pricing",
+  Effect.gen(function* () {
+    yield* set("OPENROUTER_API_KEY", "test-api-key")
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    expect(model.cost.input).toBe(2.5)
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 5,
+      output: 22.5,
+      cache: { read: 0.5, write: 0 },
+    })
+    expect(model.cost.tiers?.[0]?.tier).toEqual({ type: "context", size: 272_000 })
+  }),
+  {
+    config: {
+      provider: {
+        openrouter: {
+          models: { "openai/gpt-5.4": { options: {} } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config over-200k cost overrides the database over-200k pricing",
+  Effect.gen(function* () {
+    yield* set("OPENROUTER_API_KEY", "test-api-key")
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 7,
+      output: 30,
+      cache: { read: 0.7, write: 0 },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        openrouter: {
+          models: { "openai/gpt-5.4": { cost: { input: 3.5, output: 15, context_over_200k: { input: 7, output: 30, cache_read: 0.7 } } } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
   "completely new provider not in database can be configured",
   Effect.gen(function* () {
     const providers = yield* list

@@ -1468,6 +1468,19 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
+                // Config cannot express tiers, and a config entry that only names a model
+                // (the common case) must not price its long-context steps at the base rate.
+                tiers: existingModel?.cost?.tiers,
+                experimentalOver200K: model?.cost?.context_over_200k
+                  ? {
+                      input: model.cost.context_over_200k.input,
+                      output: model.cost.context_over_200k.output,
+                      cache: {
+                        read: model.cost.context_over_200k.cache_read ?? 0,
+                        write: model.cost.context_over_200k.cache_write ?? 0,
+                      },
+                    }
+                  : existingModel?.cost?.experimentalOver200K,
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {

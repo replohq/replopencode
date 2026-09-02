@@ -1468,21 +1468,12 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
-                // Config cannot express tiers, and a config entry that only names a model
-                // (the common case) must not price its long-context steps at the base rate.
-                // A config `context_over_200k` governs every context above 200K, so the
-                // catalog's context tiers (which session.ts consults first) are dropped
-                // rather than letting them shadow the configured price above their size.
+                // Config cannot express tiers, so a config entry that only names a model keeps the
+                // catalog's. A config context_over_200k prices everything above 200K itself, and
+                // Session.getUsage consults tiers first, so it must not inherit tiers that shadow it.
                 tiers: model?.cost?.context_over_200k ? undefined : existingModel?.cost?.tiers,
                 experimentalOver200K: model?.cost?.context_over_200k
-                  ? {
-                      input: model.cost.context_over_200k.input,
-                      output: model.cost.context_over_200k.output,
-                      cache: {
-                        read: model.cost.context_over_200k.cache_read ?? 0,
-                        write: model.cost.context_over_200k.cache_write ?? 0,
-                      },
-                    }
+                  ? cost(model.cost).experimentalOver200K
                   : existingModel?.cost?.experimentalOver200K,
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),

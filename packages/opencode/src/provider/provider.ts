@@ -1177,9 +1177,9 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
       tier: item.tier,
     }))
   }
-  // NOTE: models.dev spells a model's single long-context tier as context_over_200k even when
-  // its tiers put the threshold elsewhere (272K for gpt-5.x). Session.getUsage falls back to
-  // this field below the tier size, so the tiers own the threshold whenever they exist.
+  // NOTE (Gabe, 2026-09-02): models.dev spells a model's single long-context tier as
+  // context_over_200k even when its tiers put the threshold elsewhere (272K for gpt-5.x), and
+  // Session.getUsage falls back to this field below the tier size, so tiers own the threshold.
   if (c?.context_over_200k && !result.tiers?.length) {
     result.experimentalOver200K = {
       cache: {
@@ -1425,8 +1425,8 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
-            // NOTE: a config context_over_200k prices everything above 200K itself. Session.getUsage
-            // consults tiers first, so it is carried as a 200K tier above any catalog tiers below it.
+            // NOTE (Gabe, 2026-09-02): a config context_over_200k prices everything above 200K, but
+            // Session.getUsage consults tiers first, so it rides as a 200K tier above the catalog's lower ones.
             const over200k = model.cost?.context_over_200k ? cost(model.cost).experimentalOver200K : undefined
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
@@ -1474,7 +1474,7 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
-                // Config cannot express tiers, so a config entry that only names a model keeps the catalog's.
+                // NOTE (Gabe, 2026-09-02): config cannot express tiers, so an entry that only names a model keeps the catalog's.
                 tiers: over200k
                   ? [
                       ...(existingModel?.cost?.tiers ?? []).filter((item) => item.tier.size < 200_000),

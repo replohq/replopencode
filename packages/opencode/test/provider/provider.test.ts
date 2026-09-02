@@ -947,8 +947,8 @@ it.instance(
     expect(model.cost.tiers).toEqual([
       { input: 5, output: 22.5, cache: { read: 0.5, write: 0 }, tier: { type: "context", size: 272_000 } },
     ])
-    // OpenRouter's override for gpt-5.x starts at 272K, so the legacy over-200k field must
-    // not price the 200K-272K band at the tier rate.
+    // NOTE (Gabe, 2026-09-02): OpenRouter's override for gpt-5.x starts at 272K, so the legacy
+    // over-200k field must not price the 200K-272K band at the tier rate.
     expect(model.cost.experimentalOver200K).toBeUndefined()
     const price = (inputTokens: number) =>
       Session.getUsage({ model, usage: new Usage({ inputTokens, outputTokens: 0, totalTokens: inputTokens }) }).cost
@@ -977,7 +977,7 @@ it.instance(
       output: 30,
       cache: { read: 0.7, write: 0 },
     })
-    // The catalog's 272K context tier would otherwise outrank the configured
+    // NOTE (Gabe, 2026-09-02): the catalog's 272K tier would otherwise outrank the configured
     // over-200k price in Session.getUsage for every context above 272K.
     expect(model.cost.tiers).toEqual([
       { input: 7, output: 30, cache: { read: 0.7, write: 0 }, tier: { type: "context", size: 200_000 } },

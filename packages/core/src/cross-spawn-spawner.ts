@@ -22,6 +22,8 @@ import {
   ProcessId,
 } from "effect/unstable/process/ChildProcessSpawner"
 import * as NodeChildProcess from "node:child_process"
+import { readFileSync } from "node:fs"
+import * as os from "node:os"
 import { PassThrough } from "node:stream"
 import launch from "cross-spawn"
 import { makeGlobalNode } from "./effect/app-node"
@@ -94,7 +96,31 @@ const toPlatformError = (
   })
 }
 
-type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJS.Signals | null]>
+type Exited = readonly [code: number | null, signal: NodeJS.Signals | null]
+type ExitSignal = Deferred.Deferred<Exited>
+
+// A zombie's /proc/<pid>/stat carries its waitpid status in field 52.
+export const getExit = (stat: string): Exited | undefined => {
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+  if (fields[0] !== "Z" || fields.length < 50) return undefined
+  const status = Number(fields[49])
+  const sig = status & 0x7f
+  if (sig === 0) return [status >> 8, null]
+  const name = Object.keys(os.constants.signals)
+    .filter(isSignal)
+    .find((key) => os.constants.signals[key] === sig)
+  return [null, name ?? null]
+}
+
+const isSignal = (key: string): key is NodeJS.Signals => key in os.constants.signals
+
+const getStat = (pid: number | undefined) => {
+  try {
+    return readFileSync(`/proc/${pid}/stat`, "utf8")
+  } catch {
+    return ""
+  }
+}
 
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -266,21 +292,23 @@ export const make = Effect.gen(function* () {
 
   const spawn = (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) =>
     Effect.callback<readonly [NodeChildProcess.ChildProcess, ExitSignal], PlatformError.PlatformError>((resume) => {
-      const signal = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
+      const signal = Deferred.makeUnsafe<Exited>()
       const proc = launch(command.command, command.args, opts)
-      let end = false
-      let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
+      let exit: Exited | undefined
+      const finish = (found: Exited | undefined) => {
+        if (found && Deferred.doneUnsafe(signal, Exit.succeed(found))) clearInterval(watch)
+      }
+      // Bun can lose a child's exit and leave a zombie; /proc then reports it.
+      const watch =
+        process.platform === "linux" ? setInterval(() => finish(getExit(getStat(proc.pid))), 1_000).unref() : undefined
       proc.on("error", (err) => {
+        clearInterval(watch)
         resume(Effect.fail(toPlatformError("spawn", err, command)))
       })
       proc.on("exit", (...args) => {
         exit = args
       })
-      proc.on("close", (...args) => {
-        if (end) return
-        end = true
-        Deferred.doneUnsafe(signal, Exit.succeed(exit ?? args))
-      })
+      proc.on("close", (...args) => finish(exit ?? args))
       proc.on("spawn", () => {
         resume(Effect.succeed([proc, signal]))
       })
@@ -342,6 +370,24 @@ export const make = Effect.gen(function* () {
       })
     }
 
+  const terminate = (
+    command: ChildProcess.StandardCommand,
+    proc: NodeChildProcess.ChildProcess,
+    signal: ExitSignal,
+    opts: ChildProcess.KillOptions | undefined,
+  ) => {
+    const send = (s: NodeJS.Signals) => Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
+    const attempt = send(opts?.killSignal ?? "SIGTERM").pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
+    const bound = opts?.forceKillAfter
+    if (Predicate.isUndefined(bound)) return attempt
+    // An unreported exit must not pin the fiber after SIGKILL.
+    return Effect.timeoutOrElse(attempt, {
+      duration: bound,
+      orElse: () =>
+        send("SIGKILL").pipe(Effect.andThen(Deferred.await(signal)), Effect.timeoutOption(bound), Effect.asVoid),
+    })
+  }
+
   const source = (handle: ChildProcessHandle, from: ChildProcess.PipeFromOption | undefined) => {
     const opt = from ?? "stdout"
     switch (opt) {
@@ -380,25 +426,13 @@ export const make = Effect.gen(function* () {
               windowsHide: process.platform === "win32",
             }),
             Effect.fnUntraced(function* ([proc, signal]) {
-              const done = yield* Deferred.isDone(signal)
-              const kill = timeout(proc, command, command.options)
-              if (done) {
-                const [code] = yield* Deferred.await(signal)
-                if (process.platform === "win32") return yield* Effect.void
-                if (code !== 0 && Predicate.isNotNull(code)) return yield* Effect.ignore(kill(killGroup))
-                return yield* Effect.void
+              if (!(yield* Deferred.isDone(signal))) {
+                yield* Effect.ignore(terminate(command, proc, signal, command.options))
+                return
               }
-              const send = (s: NodeJS.Signals) =>
-                Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
-              const sig = command.options.killSignal ?? "SIGTERM"
-              const attempt = send(sig).pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
-              const escalated = command.options.forceKillAfter
-                ? Effect.timeoutOrElse(attempt, {
-                    duration: command.options.forceKillAfter,
-                    orElse: () => send("SIGKILL").pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid),
-                  })
-                : attempt
-              return yield* Effect.ignore(escalated)
+              const [code] = yield* Deferred.await(signal)
+              if (process.platform === "win32" || code === 0 || Predicate.isNull(code)) return
+              yield* Effect.ignore(timeout(proc, command, command.options)(killGroup))
             }),
           )
 
@@ -424,17 +458,7 @@ export const make = Effect.gen(function* () {
                 ),
               )
             }),
-            kill: (opts?: ChildProcess.KillOptions) => {
-              const sig = opts?.killSignal ?? "SIGTERM"
-              const send = (s: NodeJS.Signals) =>
-                Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
-              const attempt = send(sig).pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
-              if (!opts?.forceKillAfter) return attempt
-              return Effect.timeoutOrElse(attempt, {
-                duration: opts.forceKillAfter,
-                orElse: () => send("SIGKILL").pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid),
-              })
-            },
+            kill: (opts?: ChildProcess.KillOptions) => terminate(command, proc, signal, opts),
             unref: Effect.sync(() => {
               if (ref) {
                 proc.unref()

@@ -1,7 +1,7 @@
 import * as Tool from "./tool"
 import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { Cause, Effect, Schema } from "effect"
-import { CodeMode, Tool as SandboxTool, toolError } from "@opencode-ai/codemode"
+import { CodeMode, Tool as SandboxTool, decodeRejectedInput, toolError } from "@opencode-ai/codemode"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { Agent } from "@/agent/agent"
@@ -146,9 +146,9 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   const result: CallToolResult = yield* Effect.gen(function* () {
     yield* input.ctx.ask({ permission: input.entry.key, metadata: {}, patterns: ["*"], always: ["*"] })
     // Deliberately mirrors McpCatalog.convertTool's transport call so the MCP service stays free of tool-loop concerns.
-    return yield* Effect.promise(async () => {
+    const callTool = async (args: Record<string, unknown>) => {
       const raw = await input.entry.tool.client.callTool(
-        { name: input.entry.tool.def.name, arguments: input.args },
+        { name: input.entry.tool.def.name, arguments: args },
         CallToolResultSchema,
         {
           resetTimeoutOnProgress: true,
@@ -166,6 +166,16 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
             .join("\n\n") || "MCP tool returned an error",
         )
       return raw
+    }
+    return yield* Effect.promise(async () => {
+      try {
+        return await callTool(input.args)
+      } catch (error) {
+        // A server whose advertised schema says string but validates an object rejects `args: "{}"`; retry once decoded.
+        const decoded = decodeRejectedInput(input.args, error)
+        if (!decoded) throw error
+        return await callTool(decoded)
+      }
     })
   }).pipe(
     Effect.withSpan("Tool.execute", {

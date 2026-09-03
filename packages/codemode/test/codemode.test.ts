@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Schema } from "effect"
-import { CodeMode, Tool, toolError } from "../src/index.js"
+import { CodeMode, Tool, decodeRejectedInput, toolError } from "../src/index.js"
 
 const run = (tool: Tool.Definition<never>) =>
   Effect.runPromise(CodeMode.make({ tools: { host: { call: tool } } }).execute("return await tools.host.call({})"))
@@ -467,6 +467,13 @@ describe("CodeMode schema flexibility", () => {
       { args: {}, tags: ["a"], body: "{}", broken: "not json" },
       { args: { port: 3000 } },
     ])
+  })
+
+  test("decodeRejectedInput re-parses JSON-string structures only after a string-for-structure rejection", () => {
+    const rejection = new Error("MCP error -32603: Invalid argument 'args': Expected object, received string")
+    expect(decodeRejectedInput({ args: "{}", toolName: "x" }, rejection)).toStrictEqual({ args: {}, toolName: "x" })
+    expect(decodeRejectedInput({ args: "not json" }, rejection)).toBeUndefined()
+    expect(decodeRejectedInput({ args: "{}" }, new Error("MCP error -32001: Request timed out"))).toBeUndefined()
   })
 
   test("renders JSON Schema outputs and $defs references", async () => {

@@ -286,16 +286,41 @@ export const outputTypeScript = <R>(definition: Definition<R>, pretty = false): 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-/** Parses a JSON string standing in for a declared object/array (e.g. `args: "{}"`); every other value is untouched. */
-const decodeJsonString = (value: unknown, schema: JsonSchema | undefined): unknown => {
-  if (typeof value !== "string" || (schema?.type !== "object" && schema?.type !== "array")) return value
+type Accept = (parsed: unknown) => boolean
+const isStructure: Accept = (value) => isRecord(value) || Array.isArray(value)
+const acceptsFor: Partial<Record<string, Accept>> = { object: isRecord, array: Array.isArray }
+
+/** Parses a JSON string whose value satisfies `accept`; anything else is untouched. */
+const parseJsonString = (value: unknown, accept: Accept): unknown => {
+  if (typeof value !== "string" || !/^\s*[[{]/.test(value)) return value
   try {
     const parsed: unknown = JSON.parse(value)
-    if (schema.type === "array" ? Array.isArray(parsed) : isRecord(parsed)) return parsed
+    if (accept(parsed)) return parsed
   } catch {
     // not JSON: keep the original string
   }
   return value
+}
+
+/** Parses a JSON string standing in for a declared object/array (e.g. `args: "{}"`); every other value is untouched. */
+const decodeJsonString = (value: unknown, schema: JsonSchema | undefined): unknown => {
+  const accept = typeof schema?.type === "string" ? acceptsFor[schema.type] : undefined
+  return accept ? parseJsonString(value, accept) : value
+}
+
+/** A tool's validation text for a JSON string where it wanted a structure, in zod's issue and message forms. */
+const REJECTS_STRING_FOR_STRUCTURE = /expected\W+(?:object|array)\W+received\W+string/i
+
+/** Re-parses every JSON-string property that encodes a structure once a tool has rejected one; undefined when unrelated or unchanged. */
+export const decodeRejectedInput = (input: unknown, error: unknown): Record<string, unknown> | undefined => {
+  const message = error instanceof Error ? error.message : String(error)
+  if (!isRecord(input) || !REJECTS_STRING_FOR_STRUCTURE.test(message)) return undefined
+  let decoded: Record<string, unknown> | undefined
+  for (const [key, value] of Object.entries(input)) {
+    const next = parseJsonString(value, isStructure)
+    if (next !== value) (decoded ??= { ...input })[key] = next
+  }
+  return decoded
 }
 
 /**

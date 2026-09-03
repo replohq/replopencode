@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -60,6 +60,19 @@ async function gone(pid: number, timeout = 5_000) {
 }
 
 describe("cross-spawn spawner", () => {
+  describe("getExit", () => {
+    // /proc/<pid>/stat: pid, "(comm)", state, 48 fields, exit_code, ...
+    const stat = (state: string, status: number) =>
+      ["2952", "(sh -c (x))", state, ...Array(48).fill("0"), String(status), "0", "0"].join(" ")
+
+    test("decodes a zombie's waitpid status", () => {
+      expect(CrossSpawnSpawner.getExit(stat("Z", 3 << 8))).toEqual([3, null])
+      expect(CrossSpawnSpawner.getExit(stat("Z", 9))).toEqual([null, "SIGKILL"])
+      expect(CrossSpawnSpawner.getExit(stat("S", 0))).toBeUndefined()
+      expect(CrossSpawnSpawner.getExit("")).toBeUndefined()
+    })
+  })
+
   describe("basic spawning", () => {
     fx.effect(
       "captures stdout",

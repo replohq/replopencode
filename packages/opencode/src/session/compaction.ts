@@ -412,10 +412,12 @@ const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      // A replay re-asks the overflowing message, so nothing before this marker may survive next to it.
+      const tailStartID = replay ? input.parentID : selected.tail_start_id
+      if (compactionPart && tailStartID && compactionPart.tail_start_id !== tailStartID) {
         yield* session.updatePart({
           ...compactionPart,
-          tail_start_id: selected.tail_start_id,
+          tail_start_id: tailStartID,
         })
       }
 

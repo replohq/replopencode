@@ -1164,6 +1164,45 @@ describe("session.compaction.process", () => {
   )
 
   it.instance(
+    "overflow replay drops the overflowing message from the retained window",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const big = "x".repeat(600_000)
+      const first = yield* createUserMessage(session.id, big)
+      yield* createAssistantMessage(session.id, first.id, "/")
+      const resent = yield* createUserMessage(session.id, big)
+      yield* SessionCompaction.use.create({
+        sessionID: session.id,
+        agent: "build",
+        model: ref,
+        auto: true,
+        overflow: true,
+      })
+      const msgs = yield* MessageV2.filterCompactedEffect(session.id)
+      const marker = msgs.at(-1)!
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: marker.info.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+        overflow: true,
+      })
+      expect(result).toBe("continue")
+      // The fake processor never stamps finish; filterCompacted only honours a finished summary.
+      const all = yield* ssn.messages({ sessionID: session.id })
+      const summary = all.find((m) => m.info.role === "assistant" && m.info.parentID === marker.info.id)!
+      yield* ssn.updateMessage({ ...(summary.info as SessionV1.Assistant), finish: "stop" })
+
+      const context = yield* MessageV2.filterCompactedEffect(session.id)
+      expect(context.map((m) => m.info.role)).toEqual(["user", "assistant", "user"])
+      expect(context.some((m) => m.info.id === resent.id)).toBe(false)
+      expect(context.at(-1)?.parts.some((part) => part.type === "text" && part.text === big)).toBe(true)
+    }),
+  )
+
+  it.instance(
     "falls back to overflow guidance when no replayable turn exists",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service

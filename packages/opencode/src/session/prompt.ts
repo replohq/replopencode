@@ -61,6 +61,8 @@ import { LLMEvent } from "@opencode-ai/llm"
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
 
+const MAX_OVERFLOW_COMPACTIONS_PER_TURN = 1
+
 const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
@@ -1087,6 +1089,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let overflowCompactions = 0
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
         let firstTokenReqStart: number | undefined
@@ -1376,15 +1379,28 @@ const layer = Layer.effect(
             }
 
             if (result === "stop") return "break" as const
-            if (result === "compact") {
-              yield* compaction.create({
-                sessionID,
-                agent: lastUser.agent,
-                model: lastUser.model,
-                auto: true,
-                overflow: !handle.message.finish,
-              })
+            if (result === "continue") {
+              overflowCompactions = 0
+              return "continue" as const
             }
+            const overflow = !handle.message.finish
+            // Compaction already replayed this message once; overflowing again means it can never fit.
+            if (overflow && overflowCompactions >= MAX_OVERFLOW_COMPACTIONS_PER_TURN) {
+              handle.message.error = new SessionV1.ContextOverflowError({
+                message: "Message exceeds the model context limit even after compaction",
+              }).toObject()
+              handle.message.finish = "error"
+              yield* sessions.updateMessage(handle.message)
+              return "break" as const
+            }
+            if (overflow) overflowCompactions++
+            yield* compaction.create({
+              sessionID,
+              agent: lastUser.agent,
+              model: lastUser.model,
+              auto: true,
+              overflow,
+            })
             return "continue" as const
           }).pipe(
             Effect.ensuring(instruction.clear(handle.message.id)),

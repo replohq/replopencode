@@ -668,6 +668,36 @@ it.instance("loop stops provider overflow instead of auto-compacting when disabl
   }),
 )
 
+it.instance("loop stops after one overflow compaction when the replay still overflows", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.error(413, { error: { message: "prompt is too long" } })
+    yield* llm.text("## Summary")
+    yield* llm.error(413, { error: { message: "prompt is too long" } })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    expect(yield* llm.hits).toHaveLength(3)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.error?.name).toBe("ContextOverflowError")
+      expect(result.info.finish).toBe("error")
+    }
+    expect(messages.filter((message) => message.parts.some((part) => part.type === "compaction"))).toHaveLength(1)
+  }),
+)
+
 noLLMServer.instance.skip(
   "prompt emits v2 prompted and synthetic events (v2 projector disabled)",
   () =>
@@ -836,10 +866,12 @@ it.instance("turn.done logs prep_ms from the first request even when ttft captur
     const capture = Logger.make((options) => {
       captured.push(options.message)
     })
-    yield* prompt.loop({ sessionID: session.id }).pipe(
-      Effect.provide(Logger.layer([capture], { mergeWithExisting: true })),
-      Effect.provide(Layer.succeed(References.MinimumLogLevel, "Debug")),
-    )
+    yield* prompt
+      .loop({ sessionID: session.id })
+      .pipe(
+        Effect.provide(Logger.layer([capture], { mergeWithExisting: true })),
+        Effect.provide(Layer.succeed(References.MinimumLogLevel, "Debug")),
+      )
 
     const message = captured.find((item) => Array.isArray(item) && item[0] === "turn.done")
     expect(message).toBeDefined()

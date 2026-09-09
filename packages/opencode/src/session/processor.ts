@@ -3,7 +3,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Context, Option, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -17,9 +17,12 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import { SessionFallback } from "./fallback"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
@@ -82,6 +85,7 @@ interface ProcessorContext extends Input {
   firstRequestStartAt: number | undefined
   snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  fallbacks: number
 }
 
 type StreamEvent = LLMEvent
@@ -104,6 +108,7 @@ const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const database = yield* Database.Service
+    const provider = yield* Provider.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       const ctx: ProcessorContext = {
@@ -121,6 +126,7 @@ const layer = Layer.effect(
         requestStartAt: undefined,
         firstRequestStartAt: undefined,
         reasoningMap: {},
+        fallbacks: 0,
       }
       let aborted = false
 
@@ -152,8 +158,35 @@ const layer = Layer.effect(
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
-          providerID: input.model.providerID,
+          providerID: ctx.model.providerID,
           aborted,
+        })
+
+      // Swaps the step onto the configured fallback model and records the
+      // switch on the assistant message, so the persisted row names the model
+      // that actually answered.
+      const fallback = (error: SessionRetry.Err) =>
+        Effect.gen(function* () {
+          const from = { providerID: ctx.model.providerID, modelID: ctx.model.id }
+          const target = SessionFallback.next({ model: from, error, swaps: ctx.fallbacks })
+          if (!target) return undefined
+          const resolved = yield* provider
+            .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
+            .pipe(Effect.option)
+          if (Option.isNone(resolved)) return undefined
+          SessionFallback.markDegraded(from.providerID)
+          ctx.model = resolved.value
+          ctx.fallbacks += 1
+          ctx.assistantMessage.providerID = resolved.value.providerID
+          ctx.assistantMessage.modelID = resolved.value.id
+          yield* session.updateMessage(ctx.assistantMessage)
+          yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
+            "session.id": ctx.sessionID,
+            from: SessionFallback.key(from),
+            to: SessionFallback.key(target),
+            error: error.data,
+          })
+          return { message: `${from.providerID} unavailable, continuing on ${target.providerID}/${target.modelID}` }
         })
 
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
@@ -678,7 +711,7 @@ const layer = Layer.effect(
             ctx.requestStartAt = Date.now()
             // Retries re-stamp requestStartAt; keep the first attempt so prep_ms excludes backoff.
             if (ctx.firstRequestStartAt === undefined) ctx.firstRequestStartAt = ctx.requestStartAt
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream({ ...streamInput, model: ctx.model })
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
@@ -700,7 +733,9 @@ const layer = Layer.effect(
             ),
             Effect.retry(
               SessionRetry.policy({
-                provider: input.model.providerID,
+                provider: () => ctx.model.providerID,
+                attempts: SessionFallback.config()?.maxUpstreamRetryAttempts,
+                fallback,
                 parse,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
@@ -766,6 +801,7 @@ export const node = LayerNode.make({
     Image.node,
     EventV2Bridge.node,
     Database.node,
+    Provider.node,
   ],
 })
 

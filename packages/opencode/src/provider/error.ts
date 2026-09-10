@@ -99,21 +99,27 @@ export type ParsedStreamError =
       responseBody: string
     }
 
+// OpenRouter relays upstream overflow as a typeless `{ code: 502, message }` chunk.
+function isOverflow(body: { error?: { code?: string; message?: string }; message?: string }) {
+  return body.error?.code === "context_length_exceeded" || isContextOverflow(body.error?.message ?? body.message ?? "")
+}
+
 export function parseStreamError(input: unknown): ParsedStreamError | undefined {
   const raw = json(input)
   const body = typeof raw?.message === "string" ? (json(raw.message) ?? raw) : raw
   if (!body) return
 
   const responseBody = JSON.stringify(body)
+  if (isOverflow(body)) {
+    return {
+      type: "context_overflow",
+      message: "Input exceeds context window of this model",
+      responseBody,
+    }
+  }
   if (body.type !== "error") return
 
   switch (body?.error?.code) {
-    case "context_length_exceeded":
-      return {
-        type: "context_overflow",
-        message: "Input exceeds context window of this model",
-        responseBody,
-      }
     case "insufficient_quota":
       return {
         type: "api_error",

@@ -1,0 +1,93 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@opencode-ai/core/database/database"
+import { MessageTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { and, eq, sql } from "drizzle-orm"
+import { Context, Effect, Layer } from "effect"
+import { InstanceState } from "@/effect/instance-state"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { MessageV2 } from "./message-v2"
+import { Session } from "./session"
+import { SessionStatus } from "./status"
+
+export interface Interface {
+  readonly init: () => Effect.Effect<void>
+}
+
+export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRecovery") {}
+
+// Only one opencode process serves a sandbox and a turn's run loop lives in that process, so at
+// instance boot every assistant message without a completion time is provably dead. Finish it the
+// way an abort would, so clients get a terminal session.error instead of a spinner.
+const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const events = yield* EventV2Bridge.Service
+
+    const state = yield* InstanceState.make(
+      Effect.fn("SessionRecovery.state")(function* (ctx) {
+        const rows = yield* database.db
+          .select({ id: MessageTable.id, sessionID: MessageTable.session_id })
+          .from(MessageTable)
+          .innerJoin(SessionTable, eq(SessionTable.id, MessageTable.session_id))
+          .where(
+            and(
+              eq(SessionTable.project_id, ctx.project.id),
+              sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+              sql`json_extract(${MessageTable.data}, '$.time.completed') IS NULL`,
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie)
+
+        for (const row of rows) {
+          const { info, parts } = yield* MessageV2.get({ sessionID: row.sessionID, messageID: row.id }).pipe(
+            Effect.provideService(Database.Service, database),
+            Effect.orDie,
+          )
+          if (info.role !== "assistant") continue
+          const end = Date.now()
+          for (const part of parts) {
+            if (part.type !== "tool" || part.state.status === "completed" || part.state.status === "error") continue
+            const metadata = "metadata" in part.state && part.state.metadata ? part.state.metadata : {}
+            yield* sessions.updatePart({
+              ...part,
+              state: {
+                ...part.state,
+                status: "error",
+                error: "Tool execution interrupted by a restart",
+                metadata: { ...metadata, interrupted: true },
+                time: { start: "time" in part.state ? part.state.time.start : end, end },
+              },
+            })
+          }
+          // message.updated before session.error: clients that key "no reply yet" off the first
+          // assistant message must see this one land before the turn is declared failed.
+          info.error = new SessionV1.InterruptedError({
+            message: "The agent restarted before it could finish this turn. Send your message again.",
+          }).toObject()
+          info.time.completed = end
+          yield* sessions.updateMessage(info)
+          yield* events.publish(Session.Event.Error, { sessionID: info.sessionID, error: info.error })
+          yield* status.set(info.sessionID, { type: "idle" })
+          yield* Effect.logInfo("recovered interrupted turn", { sessionID: info.sessionID, messageID: info.id })
+        }
+      }),
+    )
+
+    return Service.of({
+      init: () => InstanceState.get(state).pipe(Effect.asVoid),
+    })
+  }),
+)
+
+export const node = LayerNode.make({
+  service: Service,
+  layer,
+  deps: [Database.node, Session.node, SessionStatus.node, EventV2Bridge.node, MessageV2.node],
+})
+
+export * as SessionRecovery from "./recover"

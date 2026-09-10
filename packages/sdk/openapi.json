@@ -16187,6 +16187,27 @@
         "required": ["name", "data"],
         "additionalProperties": false
       },
+      "SessionInterruptedError": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["SessionInterruptedError"]
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": ["message"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["name", "data"],
+        "additionalProperties": false
+      },
       "APIError": {
         "type": "object",
         "properties": {
@@ -16282,6 +16303,9 @@
               },
               {
                 "$ref": "#/components/schemas/ContentFilterError"
+              },
+              {
+                "$ref": "#/components/schemas/SessionInterruptedError"
               },
               {
                 "$ref": "#/components/schemas/APIError"
@@ -19131,6 +19155,9 @@
                             "$ref": "#/components/schemas/ContentFilterError"
                           },
                           {
+                            "$ref": "#/components/schemas/SessionInterruptedError"
+                          },
+                          {
                             "$ref": "#/components/schemas/APIError"
                           }
                         ]
@@ -20754,6 +20781,9 @@
               },
               "setCacheKey": {
                 "type": "boolean"
+              },
+              "promptCacheKey": {
+                "type": "string"
               },
               "timeout": {
                 "anyOf": [
@@ -31629,6 +31659,9 @@
                     "$ref": "#/components/schemas/ContentFilterError"
                   },
                   {
+                    "$ref": "#/components/schemas/SessionInterruptedError"
+                  },
+                  {
                     "$ref": "#/components/schemas/APIError"
                   }
                 ]
@@ -35508,6 +35541,9 @@
                   },
                   {
                     "$ref": "#/components/schemas/ContentFilterError"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SessionInterruptedError"
                   },
                   {
                     "$ref": "#/components/schemas/APIError"

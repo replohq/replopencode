@@ -5,11 +5,9 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { and, eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { EventV2Bridge } from "@/event-v2-bridge"
 import { MessageV2 } from "./message-v2"
 import type { MessageID, SessionID } from "./schema"
 import { Session } from "./session"
-import { SessionStatus } from "./status"
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
@@ -19,14 +17,14 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 // Only one opencode process serves a sandbox and a turn's run loop lives in that process, so at
 // instance boot every assistant message without a completion time is provably dead. Finish it the
-// way an abort would, so clients get a terminal session.error instead of a spinner.
+// way an abort would. No session.error is published here: a client that keys "no reply yet" off
+// the first assistant message can race it, and the coordinator already derives the terminal event
+// from a completed errored message when it replays the session after a restart.
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const database = yield* Database.Service
     const sessions = yield* Session.Service
-    const status = yield* SessionStatus.Service
-    const events = yield* EventV2Bridge.Service
 
     const state = yield* InstanceState.make(
       Effect.fn("SessionRecovery.state")(function* (ctx) {
@@ -78,8 +76,6 @@ const layer = Layer.effect(
       }).toObject()
       info.time.completed = end
       yield* sessions.updateMessage(info)
-      yield* events.publish(Session.Event.Error, { sessionID: info.sessionID, error: info.error })
-      yield* status.set(info.sessionID, { type: "idle" })
       yield* Effect.logInfo("recovered interrupted turn", { sessionID: info.sessionID, messageID: info.id })
     })
 
@@ -92,7 +88,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer,
-  deps: [Database.node, Session.node, SessionStatus.node, EventV2Bridge.node, MessageV2.node],
+  deps: [Database.node, Session.node, MessageV2.node],
 })
 
 export * as SessionRecovery from "./recover"

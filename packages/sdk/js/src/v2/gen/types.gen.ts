@@ -314,13 +314,6 @@ export type ContentFilterError = {
   }
 }
 
-export type SessionInterruptedError = {
-  name: "SessionInterruptedError"
-  data: {
-    message: string
-  }
-}
-
 export type ApiError = {
   name: "APIError"
   data: {
@@ -353,7 +346,6 @@ export type AssistantMessage = {
     | StructuredOutputError
     | ContextOverflowError
     | ContentFilterError
-    | SessionInterruptedError
     | ApiError
   parentID: string
   modelID: string
@@ -1230,7 +1222,6 @@ export type GlobalEvent = {
             | StructuredOutputError
             | ContextOverflowError
             | ContentFilterError
-            | SessionInterruptedError
             | ApiError
         }
       }
@@ -1755,7 +1746,6 @@ export type ProviderConfig = {
     baseURL?: string
     enterpriseUrl?: string
     setCacheKey?: boolean
-    promptCacheKey?: string
     /**
      * Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.
      */
@@ -5366,7 +5356,6 @@ export type SessionError = {
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
-      | SessionInterruptedError
       | ApiError
   }
 }
@@ -6692,7 +6681,6 @@ export type EventSessionError = {
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
-      | SessionInterruptedError
       | ApiError
   }
 }

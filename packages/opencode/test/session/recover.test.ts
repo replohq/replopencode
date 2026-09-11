@@ -85,13 +85,15 @@ it.instance("finishes a restart-orphaned assistant message with an interrupted e
     const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: assistantID })
     expect(stored.info.role).toBe("assistant")
     if (stored.info.role === "assistant") {
-      expect(stored.info.error?.name).toBe("SessionInterruptedError")
+      expect(stored.info.error?.name).toBe("UnknownError")
       expect(stored.info.time.completed).toBeNumber()
     }
     const tool = stored.parts.find((part) => part.type === "tool")
     expect(tool?.type === "tool" && tool.state.status === "error" ? tool.state.metadata?.interrupted : undefined).toBe(
       true,
     )
+    expect(seen).toContain(MessageV2.Event.Updated.type)
+    expect(seen).toContain(Session.Event.Error.type)
     expect(seen.indexOf(MessageV2.Event.Updated.type)).toBeLessThan(seen.indexOf(Session.Event.Error.type))
     expect(seen).toContain(SessionStatus.Event.Idle.type)
   }),

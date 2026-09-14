@@ -895,6 +895,116 @@ describe("session.compaction.process", () => {
     }).pipe(withCompaction({ result: "compact" })),
   )
 
+  // REPL-31509: an oversized message overflowed, was compacted, replayed, and
+  // overflowed again ~2,145 times. The second overflow compaction after a
+  // summary that produced no finished step must fail the turn instead.
+  itCompaction.instance(
+    "stops an overflow compaction when the previous summary produced no finished step",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "make this page")
+      const firstMarker = yield* createUserMessage(session.id, "")
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: firstMarker.id,
+        sessionID: session.id,
+        type: "compaction",
+        auto: true,
+        overflow: true,
+      })
+      yield* createSummaryAssistantMessage(session.id, firstMarker.id, test.directory, "summary")
+      const replayed = yield* createUserMessage(session.id, "make this page")
+      yield* ssn.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant",
+        sessionID: session.id,
+        mode: "build",
+        agent: "build",
+        path: { cwd: test.directory, root: test.directory },
+        cost: 0,
+        tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        parentID: replayed.id,
+        time: { created: Date.now() },
+        error: new SessionV1.ContextOverflowError({ message: "prompt is too long" }).toObject(),
+      })
+      const secondMarker = yield* createUserMessage(session.id, "")
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: secondMarker.id,
+        sessionID: session.id,
+        type: "compaction",
+        auto: true,
+        overflow: true,
+      })
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: secondMarker.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+        overflow: true,
+      })
+
+      const summaries = (yield* ssn.messages({ sessionID: session.id })).filter(
+        (msg) => msg.info.role === "assistant" && msg.info.summary,
+      )
+      const last = summaries.at(-1)
+      expect(result).toBe("stop")
+      expect(last?.info.role).toBe("assistant")
+      if (last?.info.role === "assistant") {
+        expect(last.info.finish).toBe("error")
+        expect(JSON.stringify(last.info.error)).toContain("too large for the model's context window")
+      }
+    }).pipe(withCompaction({ result: "continue" })),
+  )
+
+  itCompaction.instance(
+    "still compacts on overflow when a finished step followed the previous summary",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "make this page")
+      const firstMarker = yield* createUserMessage(session.id, "")
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: firstMarker.id,
+        sessionID: session.id,
+        type: "compaction",
+        auto: true,
+        overflow: true,
+      })
+      yield* createSummaryAssistantMessage(session.id, firstMarker.id, test.directory, "summary")
+      const next = yield* createUserMessage(session.id, "now tweak the header")
+      yield* createAssistantMessage(session.id, next.id, test.directory)
+      const secondMarker = yield* createUserMessage(session.id, "")
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: secondMarker.id,
+        sessionID: session.id,
+        type: "compaction",
+        auto: true,
+        overflow: true,
+      })
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      const result = yield* SessionCompaction.use.process({
+        parentID: secondMarker.id,
+        messages: msgs,
+        sessionID: session.id,
+        auto: true,
+        overflow: true,
+      })
+
+      expect(result).toBe("continue")
+    }).pipe(withCompaction({ result: "continue" })),
+  )
+
   it.instance(
     "adds synthetic continue prompt when auto is enabled",
     Effect.gen(function* () {

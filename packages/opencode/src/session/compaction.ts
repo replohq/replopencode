@@ -49,6 +49,22 @@ type CompletedCompaction = {
   summary: string | undefined
 }
 
+const REQUEST_MAX_CHARS = 8_000
+
+const isRequestText = (part: SessionV1.Part): part is SessionV1.TextPart =>
+  part.type === "text" && !part.synthetic && !part.ignored
+
+// The verbatim request the turn is carrying out; the summary only paraphrases it.
+function currentRequest(messages: SessionV1.WithParts[]) {
+  const request = messages.findLast((m) => m.info.role === "user" && m.parts.some(isRequestText))
+  const text =
+    request?.parts
+      .filter(isRequestText)
+      .map((part) => part.text)
+      .join("\n") ?? ""
+  return text.length <= REQUEST_MAX_CHARS ? text : `${text.slice(0, REQUEST_MAX_CHARS)}\n[truncated]`
+}
+
 function summaryText(message: SessionV1.WithParts) {
   const text = message.parts
     .filter((part): part is SessionV1.TextPart => part.type === "text")
@@ -480,11 +496,18 @@ const layer = Layer.effect(
               agent: userMessage.agent,
               model: userMessage.model,
             })
-            const text =
-              (input.overflow
-                ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
-                : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+            const request = currentRequest(input.messages)
+            const text = [
+              input.overflow
+                ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files."
+                : "",
+              request
+                ? `The request you were carrying out when the conversation was compacted:\n<user_request>\n${request}\n</user_request>`
+                : "",
+              "Continue the work from Next Move; if nothing remains, say so briefly. Do not restate the summary. Only stop to ask the user if you cannot proceed without their input.",
+            ]
+              .filter(Boolean)
+              .join("\n\n")
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,

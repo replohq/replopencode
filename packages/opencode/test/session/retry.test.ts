@@ -135,7 +135,11 @@ describe("session.retry.retryable", () => {
 
   test("retries OpenRouter rate limits reported inside a 200 stream", () => {
     const error = wrap(
-      JSON.stringify({ code: 429, message: "Provider returned error", metadata: { error_type: "rate_limit_exceeded" } }),
+      JSON.stringify({
+        code: 429,
+        message: "Provider returned error",
+        metadata: { error_type: "rate_limit_exceeded" },
+      }),
     )
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Rate Limited" })
   })
@@ -152,9 +156,7 @@ describe("session.retry.retryable", () => {
   })
 
   test("does not retry OpenRouter 4xx request errors reported inside a 200 stream", () => {
-    const error = wrap(
-      JSON.stringify({ code: 400, message: "Error resolving schema reference '#/$defs/__schema0'" }),
-    )
+    const error = wrap(JSON.stringify({ code: 400, message: "Error resolving schema reference '#/$defs/__schema0'" }))
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 

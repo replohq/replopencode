@@ -362,9 +362,13 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
 
     if (shouldUseContentOptions) {
       const lastContent = msg.content[msg.content.length - 1]
+      // Anthropic rejects cache_control on empty text blocks, so an empty tail
+      // part falls through to the message-level marker.
+      const emptyText = typeof lastContent === "object" && lastContent.type === "text" && !lastContent.text
       if (
         lastContent &&
         typeof lastContent === "object" &&
+        !emptyText &&
         lastContent.type !== "tool-approval-request" &&
         lastContent.type !== "tool-approval-response"
       ) {

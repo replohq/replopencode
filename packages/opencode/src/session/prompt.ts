@@ -35,6 +35,7 @@ import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { Question } from "@/question"
 import { SessionStatus } from "./status"
+import { SessionFallback } from "./fallback"
 import { LLM } from "./llm"
 import { Shell } from "@opencode-ai/core/shell"
 import { ShellID } from "@/tool/shell/id"
@@ -1181,7 +1182,12 @@ const layer = Layer.effect(
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const requested = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const route = SessionFallback.healthy({ providerID: requested.providerID, modelID: requested.id })
+          const model =
+            route.providerID === requested.providerID && route.modelID === requested.id
+              ? requested
+              : yield* getModel(ProviderV2.ID.make(route.providerID), ModelV2.ID.make(route.modelID), sessionID)
           const task = tasks.pop()
 
           if (task?.type === "subtask") {

@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Duration, Effect, Exit, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -113,6 +113,44 @@ describe("session.retry.delay", () => {
         attempt: 2,
         message: "boom",
       })
+    }),
+  )
+
+  it.instance("policy hands off to fallback once same-provider attempts are spent", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-fallback-test")
+      const error = apiError({ "retry-after-ms": "0" })
+      const status = yield* SessionStatus.Service
+      const seen: number[] = []
+
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: () => "test",
+          attempts: 1,
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          fallback: (_, attempt) =>
+            Effect.sync(() => {
+              seen.push(attempt)
+              return seen.length === 1 ? { message: "swapped" } : undefined
+            }),
+          set: (info) =>
+            status.set(sessionID, {
+              type: "retry",
+              attempt: info.attempt,
+              message: info.message,
+              next: info.next,
+            }),
+        }),
+      )
+      yield* step(error)
+      expect(seen).toEqual([])
+      const swapped = yield* step(error)
+      expect(seen).toEqual([2])
+      expect(Duration.toMillis(swapped.duration)).toBe(0)
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 2, message: "swapped" })
+      const exit = yield* Effect.exit(step(error))
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(seen).toEqual([2, 3])
     }),
   )
 })

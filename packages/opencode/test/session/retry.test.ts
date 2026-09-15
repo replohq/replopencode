@@ -155,6 +155,11 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Provider is overloaded" })
   })
 
+  test("does not retry an OpenRouter context overflow relayed with a 502 code", () => {
+    const error = wrap(JSON.stringify({ code: 502, message: "Your input exceeds the context window of this model" }))
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
   test("does not retry OpenRouter 4xx request errors reported inside a 200 stream", () => {
     const error = wrap(JSON.stringify({ code: 400, message: "Error resolving schema reference '#/$defs/__schema0'" }))
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()

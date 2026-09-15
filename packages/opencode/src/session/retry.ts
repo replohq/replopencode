@@ -4,6 +4,7 @@ import { Cause, Clock, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
+import { ProviderError } from "@/provider/error"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
@@ -138,7 +139,9 @@ export function retryable(error: Err, provider: string) {
   const json = parseJSON(msg)
   if (!json || typeof json !== "object") return undefined
   // OpenRouter reports upstream failures inside a 200 stream as {code: <http status>, ...},
-  // so the status never reaches the APIError branch above. Same rule as there: 429 and 5xx retry.
+  // so the status never reaches the APIError branch above. Same rule as there: 429 and 5xx retry,
+  // except an overflow relayed with a 502 code, which must reach compaction instead of the retry loop.
+  if (ProviderError.parseStreamError(json)?.type === "context_overflow") return undefined
   if (json.code === 429) return { message: "Rate Limited" }
   if (typeof json.code === "number" && json.code >= 500) return { message: "Provider is overloaded" }
   const code = typeof json.code === "string" ? json.code : ""

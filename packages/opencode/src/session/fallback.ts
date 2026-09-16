@@ -65,26 +65,28 @@ export function fallbackFor(model: ModelRef): ModelRef | undefined {
   return target ? parse(target) : undefined
 }
 
-export function markDegraded(providerID: string, now = Date.now()) {
+// Cooldown is per model route: the coordinator chains several models on the
+// same provider, and a failing Claude route must not take GPT down with it.
+export function markDegraded(model: ModelRef, now = Date.now()) {
   const cfg = config()
   if (!cfg) return
-  degradedUntil.set(providerID, now + cfg.cooldownSeconds * 1000)
+  degradedUntil.set(key(model), now + cfg.cooldownSeconds * 1000)
 }
 
-export function isDegraded(providerID: string, now = Date.now()) {
-  const until = degradedUntil.get(providerID)
+export function isDegraded(model: ModelRef, now = Date.now()) {
+  const until = degradedUntil.get(key(model))
   if (until === undefined) return false
   if (until > now) return true
-  degradedUntil.delete(providerID)
+  degradedUntil.delete(key(model))
   return false
 }
 
-// Follows the fallback chain past every provider that is cooling down, so the
+// Follows the fallback chain past every route that is cooling down, so the
 // steps after a failure start on the route that just worked.
 export function healthy(model: ModelRef, now = Date.now()): ModelRef {
   const seen = new Set<string>([key(model)])
   let candidate = model
-  while (isDegraded(candidate.providerID, now)) {
+  while (isDegraded(candidate, now)) {
     const next = fallbackFor(candidate)
     if (!next || seen.has(key(next))) return model
     seen.add(key(next))

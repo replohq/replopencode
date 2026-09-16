@@ -359,7 +359,7 @@ it.live("session.processor effect tests switch to the fallback model after upstr
         expect(yield* llm.calls).toBe(3)
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
-        expect(SessionFallback.isDegraded("test")).toBe(true)
+        expect(SessionFallback.isDegraded({ providerID: "test", modelID: "test-model" })).toBe(true)
       }),
     { config: (url) => fallbackCfg(url) },
   ),

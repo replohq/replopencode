@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Schema } from "effect"
 import { SessionFallback } from "../../src/session/fallback"
@@ -22,10 +22,12 @@ function apiError(statusCode?: number) {
   )
 }
 
-afterEach(() => {
+function clean() {
   delete process.env[SessionFallback.ENV_VAR]
   SessionFallback.reset()
-})
+}
+beforeEach(clean)
+afterEach(clean)
 
 describe("session.fallback config", () => {
   test("reads the coordinator env var once", () => {
@@ -77,15 +79,32 @@ describe("session.fallback healthy", () => {
   test("routes later steps around a degraded provider until the cooldown ends", () => {
     SessionFallback.configure(cfg)
     const now = 1_000_000
-    SessionFallback.markDegraded("openrouter", now)
+    SessionFallback.markDegraded(openrouter, now)
     expect(SessionFallback.healthy(openrouter, now)).toEqual(anthropic)
     expect(SessionFallback.healthy(openrouter, now + 61_000)).toEqual(openrouter)
   })
 
-  test("keeps the requested model when every provider in the cycle is degraded", () => {
+  test("keeps the requested model when every route in the cycle is degraded", () => {
     SessionFallback.configure(cfg)
-    SessionFallback.markDegraded("openrouter")
-    SessionFallback.markDegraded("anthropic")
+    SessionFallback.markDegraded(openrouter)
+    SessionFallback.markDegraded(anthropic)
     expect(SessionFallback.healthy(openrouter)).toEqual(openrouter)
+  })
+
+  test("walks a chain of models on one provider", () => {
+    const claude = { providerID: "openrouter", modelID: "anthropic/claude-sonnet-5" }
+    const gpt = { providerID: "openrouter", modelID: "openai/gpt-5.4" }
+    const gemini = { providerID: "openrouter", modelID: "google/gemini-3.1-pro-preview" }
+    SessionFallback.configure({
+      ...cfg,
+      fallbackModelsByModel: {
+        [SessionFallback.key(claude)]: SessionFallback.key(gpt),
+        [SessionFallback.key(gpt)]: SessionFallback.key(gemini),
+      },
+    })
+    SessionFallback.markDegraded(claude)
+    expect(SessionFallback.healthy(claude)).toEqual(gpt)
+    SessionFallback.markDegraded(gpt)
+    expect(SessionFallback.healthy(claude)).toEqual(gemini)
   })
 })

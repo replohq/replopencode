@@ -148,9 +148,13 @@ describe("session.retry.delay", () => {
       expect(seen).toEqual([2])
       expect(Duration.toMillis(swapped.duration)).toBe(0)
       expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 2, message: "swapped" })
+      // The fallback model gets its own retry budget before the next handoff.
+      yield* step(error)
+      expect(seen).toEqual([2])
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 1, message: "boom" })
       const exit = yield* Effect.exit(step(error))
       expect(Exit.isFailure(exit)).toBe(true)
-      expect(seen).toEqual([2, 3])
+      expect(seen).toEqual([2, 4])
     }),
   )
 })

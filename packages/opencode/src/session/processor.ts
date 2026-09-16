@@ -174,7 +174,7 @@ const layer = Layer.effect(
             .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
             .pipe(Effect.option)
           if (Option.isNone(resolved)) return undefined
-          SessionFallback.markDegraded(from.providerID)
+          SessionFallback.markDegraded(from)
           ctx.model = resolved.value
           ctx.fallbacks += 1
           ctx.assistantMessage.providerID = resolved.value.providerID

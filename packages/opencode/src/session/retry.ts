@@ -190,18 +190,22 @@ export function policy(opts: {
   // message means the caller swapped models and the schedule should continue at once.
   fallback?: (error: Err, attempt: number) => Effect.Effect<Retryable | undefined>
 }) {
+  // meta.attempt counts every failure in the schedule; each swap restarts the
+  // same-provider budget and backoff so the fallback model is not born exhausted.
+  let swapAt = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
       const provider = typeof opts.provider === "function" ? opts.provider() : opts.provider
       const retry = retryable(error, provider)
-      const exhausted = opts.attempts !== undefined && meta.attempt > opts.attempts
+      const attempt = meta.attempt - swapAt
+      const exhausted = opts.attempts !== undefined && attempt > opts.attempts
       if (retry && !exhausted) {
         return Effect.gen(function* () {
-          const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+          const wait = delay(attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
           const now = yield* Clock.currentTimeMillis
           yield* opts.set({
-            attempt: meta.attempt,
+            attempt,
             message: retry.message,
             action: retry.action,
             next: now + wait,
@@ -214,6 +218,7 @@ export function policy(opts: {
       return Effect.gen(function* () {
         const swapped = yield* fallback(error, meta.attempt)
         if (!swapped) return yield* Cause.done(meta.attempt)
+        swapAt = meta.attempt
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({ attempt: meta.attempt, message: swapped.message, action: swapped.action, next: now })
         return [meta.attempt, Duration.zero] as [number, Duration.Duration]

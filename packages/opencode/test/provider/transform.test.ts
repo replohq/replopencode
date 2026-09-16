@@ -4828,3 +4828,83 @@ describe("ProviderTransform.providerOptions - ai-gateway-provider", () => {
     expect(result).toEqual({ openaiCompatible: { reasoningEffort: "high" } })
   })
 })
+
+describe("ProviderTransform.message empty text parts", () => {
+  const openrouterClaude = {
+    id: "anthropic/claude-sonnet-5",
+    providerID: "openrouter",
+    name: "Claude Sonnet 5",
+    api: { id: "anthropic/claude-sonnet-5", npm: "@openrouter/ai-sdk-provider", url: "https://openrouter.ai/api/v1" },
+    capabilities: {},
+    options: {},
+  } as any
+
+  test("drops empty text parts so the cache marker lands on real text", () => {
+    const result = ProviderTransform.message(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "text", text: "" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "" },
+            { type: "text", text: "sure" },
+          ],
+        },
+      ],
+      openrouterClaude,
+      {},
+    ) as any[]
+
+    expect(result[0].content).toHaveLength(1)
+    expect(result[0].content[0]).toMatchObject({ type: "text", text: "hi" })
+    expect(result[0].content[0].providerOptions.openrouter).toEqual({ cacheControl: { type: "ephemeral" } })
+    expect(result[1].content).toHaveLength(1)
+    expect(result[1].content[0]).toMatchObject({ type: "text", text: "sure" })
+    expect(result[1].content[0].providerOptions.openrouter).toEqual({ cacheControl: { type: "ephemeral" } })
+  })
+
+  test("never serializes cache_control on an empty block through the OpenRouter provider", async () => {
+    const { createOpenRouter } = await import("@openrouter/ai-sdk-provider")
+    const { generateText } = await import("ai")
+    let body: any
+    const provider = createOpenRouter({
+      apiKey: "test",
+      fetch: (async (_url: unknown, init: RequestInit | undefined) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          JSON.stringify({
+            id: "gen",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )
+      }) as unknown as typeof fetch,
+    })
+    const messages = ProviderTransform.message(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "text", text: "" },
+          ],
+        },
+      ],
+      openrouterClaude,
+      {},
+    )
+    await generateText({ model: provider.chat("anthropic/claude-sonnet-5"), messages })
+
+    const parts = body.messages.flatMap((msg: any) => (Array.isArray(msg.content) ? msg.content : []))
+    expect(parts.some((part: any) => part.type === "text" && part.text === "" && part.cache_control)).toBe(false)
+    expect(parts.some((part: any) => part.type === "text" && part.text === "hi" && part.cache_control)).toBe(true)
+  })
+})

@@ -79,6 +79,21 @@ describe("session.fallback failed", () => {
     expect(SessionFallback.isDegraded(openrouter)).toBe(false)
   })
 
+  test("switches on transport errors that never became API errors", () => {
+    SessionFallback.configure(cfg)
+    const unknown = { name: "UnknownError", data: { message: "TypeError: fetch failed" } } as any
+    expect(SessionFallback.failed({ model: openrouter, error: unknown, swaps: 0 })).toEqual(anthropic)
+  })
+
+  test("ignores map values without a provider", () => {
+    SessionFallback.configure({
+      ...cfg,
+      fallbackModelsByModel: { [SessionFallback.key(openrouter)]: "claude-sonnet-5" },
+    })
+    expect(SessionFallback.fallbackFor(openrouter)).toBeUndefined()
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+  })
+
   test("caps swaps per step but still records the failed route", () => {
     SessionFallback.configure(cfg)
     expect(SessionFallback.failed({ model: anthropic, error: apiError(503), swaps: 1 })).toBeUndefined()

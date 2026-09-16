@@ -7,13 +7,13 @@ import type { Err } from "./retry"
 // model-fallback plugin consumed, so nothing upstream has to change.
 export const ENV_VAR = "REPLO_OPENCODE_FALLBACK_CONFIG"
 
-const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
+const NonNegativeInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
 const ConfigSchema = Schema.Struct({
   fallbackModelsByModel: Schema.Record(Schema.String, Schema.String),
-  fallbackOnErrors: Schema.Array(Count),
-  maxFallbackAttempts: Count,
-  maxUpstreamRetryAttempts: Count,
-  cooldownSeconds: Count,
+  fallbackOnErrors: Schema.Array(NonNegativeInt),
+  maxFallbackAttempts: NonNegativeInt,
+  maxUpstreamRetryAttempts: NonNegativeInt,
+  cooldownSeconds: NonNegativeInt,
 })
 export type Config = Schema.Schema.Type<typeof ConfigSchema>
 const decode = Schema.decodeUnknownExit(Schema.fromJsonString(ConfigSchema))
@@ -55,14 +55,13 @@ export function key(model: ModelRef) {
   return `${model.providerID}/${model.modelID}`
 }
 
-export function parse(value: string): ModelRef {
-  const index = value.indexOf("/")
-  return { providerID: value.slice(0, index), modelID: value.slice(index + 1) }
-}
-
+// Map values are "provider/model"; a value without a provider is ignored
+// rather than routed to a model that does not exist.
 export function fallbackFor(model: ModelRef): ModelRef | undefined {
   const target = config()?.fallbackModelsByModel[key(model)]
-  return target ? parse(target) : undefined
+  const index = target?.indexOf("/") ?? -1
+  if (!target || index < 1 || index === target.length - 1) return undefined
+  return { providerID: target.slice(0, index), modelID: target.slice(index + 1) }
 }
 
 // Cooldown is per model route: the coordinator chains several models on the

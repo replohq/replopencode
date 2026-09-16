@@ -389,19 +389,19 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
+      const prompt = { role: "user" as const, content: [{ type: "text" as const, text: nextPrompt }] }
       const result = yield* processor.process({
         user: userMessage,
         agent,
         sessionID: input.sessionID,
         tools: {},
         system: [],
-        messages: [
-          ...modelMessages,
-          {
-            role: "user",
-            content: [{ type: "text", text: nextPrompt }],
-          },
-        ],
+        messages: [...modelMessages, prompt],
+        convert: (target) =>
+          MessageV2.toModelMessagesEffect(msgs, target, {
+            stripMedia: true,
+            toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+          }).pipe(Effect.map((converted) => [...converted, prompt])),
       })
 
       if (result === "compact") {

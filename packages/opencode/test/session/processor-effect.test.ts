@@ -372,6 +372,53 @@ it.live("session.processor effect tests switch to the fallback model after upstr
   ),
 )
 
+it.live("session.processor effect tests keep the requested model on the row when every route fails", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        SessionFallback.configure({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        const { processors, session, provider } = yield* boot()
+        yield* llm.push(httpError(503, { error: { message: "down" } }), httpError(503, { error: { message: "down" } }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(2)
+        expect(stored.info).toMatchObject({ providerID: "test", modelID: "test-model" })
+        expect(stored.info.role === "assistant" ? stored.info.error?.name : undefined).toBe("APIError")
+        expect(SessionFallback.isDegraded({ providerID: "fallback", modelID: "fallback-model" })).toBe(true)
+      }),
+    { config: (url) => fallbackCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests preserve text start time", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

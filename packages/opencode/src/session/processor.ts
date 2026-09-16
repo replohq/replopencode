@@ -493,6 +493,8 @@ const layer = Layer.effect(
             ctx.assistantMessage.finish = value.reason
             ctx.assistantMessage.cost += usage.cost
             ctx.assistantMessage.tokens = usage.tokens
+            ctx.assistantMessage.providerID = ctx.model.providerID
+            ctx.assistantMessage.modelID = ctx.model.id
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -677,9 +679,9 @@ const layer = Layer.effect(
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {
         let messages = streamInput.messages
-        // Swaps the step onto the configured fallback model, rebuilds the history
-        // for it, and records the switch on the assistant message so the
-        // persisted row names the model that actually answered.
+        // Swaps the step onto the configured fallback model and rebuilds the
+        // history for it. The assistant row is stamped at step-finish, so a
+        // fallback that also fails never claims to have answered.
         const fallback = (error: SessionRetry.Err) =>
           Effect.gen(function* () {
             const from = SessionFallback.ref(ctx.model)
@@ -692,9 +694,6 @@ const layer = Layer.effect(
             ctx.model = resolved.value
             ctx.fallbacks += 1
             if (streamInput.convert) messages = yield* streamInput.convert(ctx.model)
-            ctx.assistantMessage.providerID = resolved.value.providerID
-            ctx.assistantMessage.modelID = resolved.value.id
-            yield* session.updateMessage(ctx.assistantMessage)
             yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
               "session.id": ctx.sessionID,
               from: SessionFallback.key(from),

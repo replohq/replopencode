@@ -4907,4 +4907,52 @@ describe("ProviderTransform.message empty text parts", () => {
     expect(parts.some((part: any) => part.type === "text" && part.text === "" && part.cache_control)).toBe(false)
     expect(parts.some((part: any) => part.type === "text" && part.text === "hi" && part.cache_control)).toBe(true)
   })
+
+  test("keeps signed whitespace-only reasoning on the wire through the OpenRouter provider", async () => {
+    const { createOpenRouter } = await import("@openrouter/ai-sdk-provider")
+    const { generateText } = await import("ai")
+    let body: any
+    const provider = createOpenRouter({
+      apiKey: "test",
+      fetch: (async (_url: unknown, init: RequestInit | undefined) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          JSON.stringify({
+            id: "gen",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )
+      }) as unknown as typeof fetch,
+    })
+    const detail = {
+      type: "reasoning.text",
+      text: "\n",
+      signature: "signed-thinking",
+      format: "anthropic-claude-v1",
+      index: 0,
+    }
+    const messages = ProviderTransform.message(
+      [
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "\n", providerOptions: { openrouter: { reasoning_details: [detail] } } },
+            { type: "text", text: "Answer" },
+          ],
+        },
+        { role: "user", content: [{ type: "text", text: "and again" }] },
+      ],
+      openrouterClaude,
+      {},
+    )
+    await generateText({ model: provider.chat("anthropic/claude-sonnet-5"), messages })
+
+    const assistant = body.messages.find((msg: any) => msg.role === "assistant")
+    expect(assistant.reasoning_details).toEqual([detail])
+    expect(assistant.content).toBe("Answer")
+  })
 })

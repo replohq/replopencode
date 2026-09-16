@@ -147,10 +147,14 @@ function normalizeMessages(
             return part.text !== ""
           }
           if (part.type === "reasoning") {
+            // OpenRouter keeps the Claude signature in reasoning_details on the
+            // part, so a blank signed part still has to reach the wire.
+            const openrouterDetails = part.providerOptions?.openrouter?.reasoning_details
             return (
               part.text.trim().length > 0 ||
               part.providerOptions?.anthropic?.signature != null ||
-              part.providerOptions?.anthropic?.redactedData != null
+              part.providerOptions?.anthropic?.redactedData != null ||
+              (Array.isArray(openrouterDetails) && openrouterDetails.length > 0)
             )
           }
           return true

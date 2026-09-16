@@ -1183,11 +1183,14 @@ const layer = Layer.effect(
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
           const requested = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
-          const route = SessionFallback.healthy({ providerID: requested.providerID, modelID: requested.id })
+          const route = SessionFallback.route(SessionFallback.ref(requested))
+          // A route the sandbox cannot resolve is a config mistake, not a reason to fail the turn.
           const model =
-            route.providerID === requested.providerID && route.modelID === requested.id
+            SessionFallback.key(route) === SessionFallback.key(SessionFallback.ref(requested))
               ? requested
-              : yield* getModel(ProviderV2.ID.make(route.providerID), ModelV2.ID.make(route.modelID), sessionID)
+              : yield* provider
+                  .getModel(ProviderV2.ID.make(route.providerID), ModelV2.ID.make(route.modelID))
+                  .pipe(Effect.option, Effect.map(Option.getOrElse(() => requested)))
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1338,7 +1341,6 @@ const layer = Layer.effect(
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
-              model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 

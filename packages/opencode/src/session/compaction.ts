@@ -139,7 +139,7 @@ export interface Interface {
     sessionID: SessionID
     auto: boolean
     overflow?: boolean
-    // The route the step loop resolved for this turn; falls back to the user message's model.
+    // Used only when the compaction agent has no model of its own; otherwise ignored.
     model?: Provider.Model
   }) => Effect.Effect<"continue" | "stop">
   readonly create: (input: {
@@ -402,7 +402,6 @@ const layer = Layer.effect(
             content: [{ type: "text", text: nextPrompt }],
           },
         ],
-        model,
       })
 
       if (result === "compact") {

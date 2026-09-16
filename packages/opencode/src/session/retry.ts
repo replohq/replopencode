@@ -184,28 +184,27 @@ export function policy(opts: {
   provider: string | (() => string)
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
-  // Same-provider retries stop after this many attempts; unset keeps today's unbounded behaviour.
-  attempts?: number
+  // Same-route retries before the fallback hook is asked. 0 disables them; omit for today's unbounded behaviour.
+  retries?: number
   // Asked once retries are exhausted or the error is not retryable. Returning a
   // message means the caller swapped models and the schedule should continue at once.
   fallback?: (error: Err, attempt: number) => Effect.Effect<Retryable | undefined>
 }) {
-  // meta.attempt counts every failure in the schedule; each swap restarts the
-  // same-provider budget and backoff so the fallback model is not born exhausted.
   let swapAt = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
       const provider = typeof opts.provider === "function" ? opts.provider() : opts.provider
       const retry = retryable(error, provider)
-      const attempt = meta.attempt - swapAt
-      const exhausted = opts.attempts !== undefined && attempt > opts.attempts
+      // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
+      const sinceSwap = meta.attempt - swapAt
+      const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
       if (retry && !exhausted) {
         return Effect.gen(function* () {
-          const wait = delay(attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+          const wait = delay(sinceSwap, SessionV1.APIError.isInstance(error) ? error : undefined)
           const now = yield* Clock.currentTimeMillis
           yield* opts.set({
-            attempt,
+            attempt: meta.attempt,
             message: retry.message,
             action: retry.action,
             next: now + wait,

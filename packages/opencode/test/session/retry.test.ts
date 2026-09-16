@@ -126,7 +126,7 @@ describe("session.retry.delay", () => {
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: () => "test",
-          attempts: 1,
+          retries: 1,
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
           fallback: (_, attempt) =>
             Effect.sync(() => {
@@ -148,10 +148,10 @@ describe("session.retry.delay", () => {
       expect(seen).toEqual([2])
       expect(Duration.toMillis(swapped.duration)).toBe(0)
       expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 2, message: "swapped" })
-      // The fallback model gets its own retry budget before the next handoff.
+      // The fallback model gets its own retry budget before the next handoff; the status keeps counting.
       yield* step(error)
       expect(seen).toEqual([2])
-      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 1, message: "boom" })
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 3, message: "boom" })
       const exit = yield* Effect.exit(step(error))
       expect(Exit.isFailure(exit)).toBe(true)
       expect(seen).toEqual([2, 4])

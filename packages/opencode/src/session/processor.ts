@@ -53,7 +53,8 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  // The model is the processor's own: it starts as the one given to create() and moves on fallback.
+  readonly process: (streamInput: Omit<LLM.StreamInput, "model">) => Effect.Effect<Result>
 }
 
 type Input = {
@@ -167,8 +168,8 @@ const layer = Layer.effect(
       // that actually answered.
       const fallback = (error: SessionRetry.Err) =>
         Effect.gen(function* () {
-          const from = { providerID: ctx.model.providerID, modelID: ctx.model.id }
-          const target = SessionFallback.failed({ model: from, error, swaps: ctx.fallbacks })
+          const from = SessionFallback.ref(ctx.model)
+          const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
           if (!target) return undefined
           const resolved = yield* provider
             .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
@@ -694,7 +695,7 @@ const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: Omit<LLM.StreamInput, "model">) {
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -733,7 +734,7 @@ const layer = Layer.effect(
             Effect.retry(
               SessionRetry.policy({
                 provider: () => ctx.model.providerID,
-                attempts: SessionFallback.config()?.maxUpstreamRetryAttempts,
+                retries: SessionFallback.config()?.maxUpstreamRetryAttempts,
                 fallback,
                 parse,
                 set: (info) => {

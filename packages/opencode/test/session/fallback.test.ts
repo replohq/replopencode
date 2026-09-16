@@ -54,35 +54,37 @@ describe("session.fallback config", () => {
   })
 
   test("does nothing without config", () => {
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
-    expect(SessionFallback.healthy(openrouter)).toEqual(openrouter)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
   })
 })
 
-describe("session.fallback failed", () => {
+describe("session.fallback recordFailure", () => {
   test("switches on listed statuses and on retryable transport errors", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(402), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.failed({ model: anthropic, error: apiError(429), swaps: 0 })).toEqual(openrouter)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: anthropic, error: apiError(429), swaps: 0 })).toEqual(openrouter)
   })
 
   test("stays put on client errors, non-retryable statusless errors, context overflow, and unmapped models", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(400), swaps: 0 })).toBeUndefined()
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(undefined, false), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(400), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(402), swaps: 0 })).toBeUndefined()
+    expect(
+      SessionFallback.recordFailure({ model: openrouter, error: apiError(undefined, false), swaps: 0 }),
+    ).toBeUndefined()
     const overflow = new SessionV1.ContextOverflowError({ message: "too long" }).toObject()
-    expect(SessionFallback.failed({ model: openrouter, error: overflow, swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: overflow, swaps: 0 })).toBeUndefined()
     const unmapped = { providerID: "openrouter", modelID: "openai/gpt-5.6" }
-    expect(SessionFallback.failed({ model: unmapped, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: unmapped, error: apiError(503), swaps: 0 })).toBeUndefined()
     expect(SessionFallback.isDegraded(openrouter)).toBe(false)
   })
 
   test("switches on transport errors that never became API errors", () => {
     SessionFallback.configure(cfg)
     const unknown = { name: "UnknownError", data: { message: "TypeError: fetch failed" } } as any
-    expect(SessionFallback.failed({ model: openrouter, error: unknown, swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: unknown, swaps: 0 })).toEqual(anthropic)
   })
 
   test("ignores map values without a provider", () => {
@@ -91,30 +93,30 @@ describe("session.fallback failed", () => {
       fallbackModelsByModel: { [SessionFallback.key(openrouter)]: "claude-sonnet-5" },
     })
     expect(SessionFallback.fallbackFor(openrouter)).toBeUndefined()
-    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
   })
 
   test("caps swaps per step but still records the failed route", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.failed({ model: anthropic, error: apiError(503), swaps: 1 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: anthropic, error: apiError(503), swaps: 1 })).toBeUndefined()
     expect(SessionFallback.isDegraded(anthropic)).toBe(true)
   })
 })
 
-describe("session.fallback healthy", () => {
+describe("session.fallback route", () => {
   test("routes later steps around a degraded provider until the cooldown ends", () => {
     SessionFallback.configure(cfg)
     const now = 1_000_000
     SessionFallback.markDegraded(openrouter, now)
-    expect(SessionFallback.healthy(openrouter, now)).toEqual(anthropic)
-    expect(SessionFallback.healthy(openrouter, now + 61_000)).toEqual(openrouter)
+    expect(SessionFallback.route(openrouter, now)).toEqual(anthropic)
+    expect(SessionFallback.route(openrouter, now + 61_000)).toEqual(openrouter)
   })
 
   test("keeps the requested model when every route in the cycle is degraded", () => {
     SessionFallback.configure(cfg)
     SessionFallback.markDegraded(openrouter)
     SessionFallback.markDegraded(anthropic)
-    expect(SessionFallback.healthy(openrouter)).toEqual(openrouter)
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
   })
 
   test("walks a chain of models on one provider", () => {
@@ -129,8 +131,8 @@ describe("session.fallback healthy", () => {
       },
     })
     SessionFallback.markDegraded(claude)
-    expect(SessionFallback.healthy(claude)).toEqual(gpt)
+    expect(SessionFallback.route(claude)).toEqual(gpt)
     SessionFallback.markDegraded(gpt)
-    expect(SessionFallback.healthy(claude)).toEqual(gemini)
+    expect(SessionFallback.route(claude)).toEqual(gemini)
   })
 })

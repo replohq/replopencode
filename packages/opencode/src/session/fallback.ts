@@ -2,6 +2,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Exit, Schema } from "effect"
 import { isRecord } from "@/util/record"
 import type { Err } from "./retry"
+import type { Provider } from "@/provider/provider"
 
 // The coordinator ships this per sandbox; it is the same shape the removed
 // model-fallback plugin consumed, so nothing upstream has to change.
@@ -19,6 +20,10 @@ export type Config = Schema.Schema.Type<typeof ConfigSchema>
 const decode = Schema.decodeUnknownExit(Schema.fromJsonString(ConfigSchema))
 
 export type ModelRef = { providerID: string; modelID: string }
+
+export function ref(model: Provider.Model): ModelRef {
+  return { providerID: model.providerID, modelID: model.id }
+}
 
 const NETWORK_ERROR_PATTERN =
   /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network error|terminated/i
@@ -80,9 +85,11 @@ export function isDegraded(model: ModelRef, now = Date.now()) {
   return false
 }
 
-// Follows the fallback chain past every route that is cooling down, so the
-// steps after a failure start on the route that just worked.
-export function healthy(model: ModelRef, now = Date.now()): ModelRef {
+// The route a step should start on: follows the fallback chain past every
+// route that is cooling down, so the steps after a failure start on the route
+// that just worked. Returns a config route, which the caller still has to
+// resolve against the provider registry.
+export function route(model: ModelRef, now = Date.now()): ModelRef {
   const seen = new Set<string>([key(model)])
   let candidate = model
   while (isDegraded(candidate, now)) {
@@ -107,16 +114,17 @@ export function qualifies(error: Err): boolean {
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     if (status === undefined) return error.data.isRetryable === true
-    return cfg.fallbackOnErrors.includes(status) || status === 402
+    return cfg.fallbackOnErrors.includes(status)
   }
   const message = isRecord(error.data) ? error.data.message : undefined
   return typeof message === "string" && NETWORK_ERROR_PATTERN.test(message)
 }
 
-// Records the failed route and returns the one to try next, if the swap
-// budget allows another. The cooldown is recorded before the cap is applied so
-// the last route in a chain is also skipped by the steps that follow.
-export function failed(input: { model: ModelRef; error: Err; swaps: number }): ModelRef | undefined {
+// Puts the failed route on cooldown and returns the one to try next, if the
+// swap budget allows another. The cooldown is recorded before the cap and the
+// map are consulted, so an undefined result can still mean the route was
+// marked; the last route in a chain is then skipped by the steps that follow.
+export function recordFailure(input: { model: ModelRef; error: Err; swaps: number }): ModelRef | undefined {
   const cfg = config()
   if (!cfg || !qualifies(input.error)) return undefined
   markDegraded(input.model)

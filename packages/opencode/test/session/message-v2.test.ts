@@ -1382,6 +1382,23 @@ describe("session.message-v2.fromError", () => {
     })
   })
 
+  test("serializes OpenRouter typeless overflow chunks as ContextOverflowError", () => {
+    const input = {
+      code: 502,
+      message: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+      metadata: { error_type: "provider_unavailable" },
+    }
+    const result = MessageV2.fromError(input, { providerID })
+
+    expect(result).toStrictEqual({
+      name: "ContextOverflowError",
+      data: {
+        message: "Input exceeds context window of this model",
+        responseBody: JSON.stringify(input),
+      },
+    })
+  })
+
   test("serializes response error codes", () => {
     const cases = [
       {

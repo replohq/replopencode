@@ -16,9 +16,9 @@ const cfg: SessionFallback.Config = {
 const openrouter = { providerID: "openrouter", modelID: "anthropic/claude-sonnet-5" }
 const anthropic = { providerID: "anthropic", modelID: "claude-sonnet-5" }
 
-function apiError(statusCode?: number) {
+function apiError(statusCode?: number, isRetryable = true) {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
-    new SessionV1.APIError({ message: "boom", isRetryable: true, statusCode }).toObject(),
+    new SessionV1.APIError({ message: "boom", isRetryable, statusCode }).toObject(),
   )
 }
 
@@ -45,33 +45,44 @@ describe("session.fallback config", () => {
     expect(SessionFallback.config()).toBeNull()
   })
 
+  test("rejects negative or fractional limits", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, cooldownSeconds: -1 })
+    expect(SessionFallback.config()).toBeNull()
+    SessionFallback.reset()
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, maxFallbackAttempts: 1.5 })
+    expect(SessionFallback.config()).toBeNull()
+  })
+
   test("does nothing without config", () => {
-    expect(SessionFallback.next({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
     expect(SessionFallback.healthy(openrouter)).toEqual(openrouter)
   })
 })
 
-describe("session.fallback next", () => {
-  test("switches on listed statuses and on transport errors", () => {
+describe("session.fallback failed", () => {
+  test("switches on listed statuses and on retryable transport errors", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.next({ model: openrouter, error: apiError(503), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.next({ model: openrouter, error: apiError(402), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.next({ model: openrouter, error: apiError(), swaps: 0 })).toEqual(anthropic)
-    expect(SessionFallback.next({ model: anthropic, error: apiError(429), swaps: 0 })).toEqual(openrouter)
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(503), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(402), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.failed({ model: anthropic, error: apiError(429), swaps: 0 })).toEqual(openrouter)
   })
 
-  test("stays put on client errors, context overflow, and unmapped models", () => {
+  test("stays put on client errors, non-retryable statusless errors, context overflow, and unmapped models", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.next({ model: openrouter, error: apiError(400), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(400), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: openrouter, error: apiError(undefined, false), swaps: 0 })).toBeUndefined()
     const overflow = new SessionV1.ContextOverflowError({ message: "too long" }).toObject()
-    expect(SessionFallback.next({ model: openrouter, error: overflow, swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: openrouter, error: overflow, swaps: 0 })).toBeUndefined()
     const unmapped = { providerID: "openrouter", modelID: "openai/gpt-5.6" }
-    expect(SessionFallback.next({ model: unmapped, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: unmapped, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
   })
 
-  test("caps swaps per step", () => {
+  test("caps swaps per step but still records the failed route", () => {
     SessionFallback.configure(cfg)
-    expect(SessionFallback.next({ model: openrouter, error: apiError(503), swaps: 1 })).toBeUndefined()
+    expect(SessionFallback.failed({ model: anthropic, error: apiError(503), swaps: 1 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(anthropic)).toBe(true)
   })
 })
 

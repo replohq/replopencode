@@ -133,7 +133,7 @@ function normalizeMessages(
   // and remove empty text/reasoning parts from array content. Claude behind
   // OpenRouter has the same rule, and the OpenRouter provider copies a
   // message-level cache marker onto the last text part, empty or not.
-  const claudeViaOpenRouter = model.api.npm === "@openrouter/ai-sdk-provider" && model.api.id.startsWith("anthropic/")
+  const claudeViaOpenRouter = model.api.npm === "@openrouter/ai-sdk-provider" && model.api.id.includes("claude")
   if (model.api.npm === "@ai-sdk/anthropic" || claudeViaOpenRouter) {
     msgs = msgs
       .map((msg) => {

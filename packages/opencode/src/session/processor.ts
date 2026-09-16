@@ -168,13 +168,12 @@ const layer = Layer.effect(
       const fallback = (error: SessionRetry.Err) =>
         Effect.gen(function* () {
           const from = { providerID: ctx.model.providerID, modelID: ctx.model.id }
-          const target = SessionFallback.next({ model: from, error, swaps: ctx.fallbacks })
+          const target = SessionFallback.failed({ model: from, error, swaps: ctx.fallbacks })
           if (!target) return undefined
           const resolved = yield* provider
             .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
             .pipe(Effect.option)
           if (Option.isNone(resolved)) return undefined
-          SessionFallback.markDegraded(from)
           ctx.model = resolved.value
           ctx.fallbacks += 1
           ctx.assistantMessage.providerID = resolved.value.providerID

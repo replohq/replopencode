@@ -335,6 +335,7 @@ it.live("session.processor effect tests switch to the fallback model after upstr
           sessionID: chat.id,
           model: mdl,
         })
+        const converted: string[] = []
 
         const value = yield* handle.process({
           user: {
@@ -349,16 +350,23 @@ it.live("session.processor effect tests switch to the fallback model after upstr
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: (target) => {
+            converted.push(target.id)
+            return Effect.succeed([{ role: "user", content: "hi again" }])
+          },
           tools: {},
         })
         const parts = yield* MessageV2.parts(msg.id)
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const inputs = yield* llm.inputs
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(3)
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
         expect(SessionFallback.isDegraded({ providerID: "test", modelID: "test-model" })).toBe(true)
+        expect(converted).toEqual(["fallback-model"])
+        expect(JSON.stringify(inputs.at(-1))).toContain("hi again")
       }),
     { config: (url) => fallbackCfg(url) },
   ),

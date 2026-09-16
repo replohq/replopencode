@@ -81,6 +81,24 @@ describe("session.fallback recordFailure", () => {
     expect(SessionFallback.isDegraded(openrouter)).toBe(false)
   })
 
+  test("reads the status OpenRouter relays inside a 200 stream", () => {
+    SessionFallback.configure(cfg)
+    const relayed = (code: number) =>
+      ({
+        name: "UnknownError",
+        data: { message: JSON.stringify({ code, message: "Provider returned error", metadata: {} }) },
+      }) as any
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(503), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(429), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(400), swaps: 0 })).toBeUndefined()
+  })
+
+  test("a swap budget of zero also leaves later steps alone", () => {
+    SessionFallback.configure({ ...cfg, maxFallbackAttempts: 0 })
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+  })
+
   test("switches on transport errors that never became API errors", () => {
     SessionFallback.configure(cfg)
     const unknown = { name: "UnknownError", data: { message: "TypeError: fetch failed" } } as any

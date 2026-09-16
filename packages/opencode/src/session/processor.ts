@@ -54,7 +54,7 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   // The model is the processor's own: it starts as the one given to create() and moves on fallback.
-  readonly process: (streamInput: Omit<LLM.StreamInput, "model">) => Effect.Effect<Result>
+  readonly process: (streamInput: ProcessInput) => Effect.Effect<Result>
 }
 
 type Input = {
@@ -72,6 +72,12 @@ type ToolCall = {
   messageID: SessionV1.ToolPart["messageID"]
   sessionID: SessionV1.ToolPart["sessionID"]
   done: Deferred.Deferred<void>
+}
+
+export type ProcessInput = Omit<LLM.StreamInput, "model"> & {
+  // Rebuilds the history for a model other than the one the caller converted it for;
+  // without it a fallback keeps the caller's messages as they are.
+  convert?: (model: Provider.Model) => Effect.Effect<LLM.StreamInput["messages"]>
 }
 
 interface ProcessorContext extends Input {
@@ -161,32 +167,6 @@ const layer = Layer.effect(
         MessageV2.fromError(e, {
           providerID: ctx.model.providerID,
           aborted,
-        })
-
-      // Swaps the step onto the configured fallback model and records the
-      // switch on the assistant message, so the persisted row names the model
-      // that actually answered.
-      const fallback = (error: SessionRetry.Err) =>
-        Effect.gen(function* () {
-          const from = SessionFallback.ref(ctx.model)
-          const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
-          if (!target) return undefined
-          const resolved = yield* provider
-            .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
-            .pipe(Effect.option)
-          if (Option.isNone(resolved)) return undefined
-          ctx.model = resolved.value
-          ctx.fallbacks += 1
-          ctx.assistantMessage.providerID = resolved.value.providerID
-          ctx.assistantMessage.modelID = resolved.value.id
-          yield* session.updateMessage(ctx.assistantMessage)
-          yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
-            "session.id": ctx.sessionID,
-            from: SessionFallback.key(from),
-            to: SessionFallback.key(target),
-            error: error.data,
-          })
-          return { message: `${from.providerID} unavailable, continuing on ${target.providerID}/${target.modelID}` }
         })
 
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
@@ -695,7 +675,34 @@ const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: Omit<LLM.StreamInput, "model">) {
+      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {
+        let messages = streamInput.messages
+        // Swaps the step onto the configured fallback model, rebuilds the history
+        // for it, and records the switch on the assistant message so the
+        // persisted row names the model that actually answered.
+        const fallback = (error: SessionRetry.Err) =>
+          Effect.gen(function* () {
+            const from = SessionFallback.ref(ctx.model)
+            const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
+            if (!target) return undefined
+            const resolved = yield* provider
+              .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
+              .pipe(Effect.option)
+            if (Option.isNone(resolved)) return undefined
+            ctx.model = resolved.value
+            ctx.fallbacks += 1
+            if (streamInput.convert) messages = yield* streamInput.convert(ctx.model)
+            ctx.assistantMessage.providerID = resolved.value.providerID
+            ctx.assistantMessage.modelID = resolved.value.id
+            yield* session.updateMessage(ctx.assistantMessage)
+            yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
+              "session.id": ctx.sessionID,
+              from: SessionFallback.key(from),
+              to: SessionFallback.key(target),
+              error: error.data,
+            })
+            return { message: `${from.providerID} unavailable, continuing on ${target.providerID}/${target.modelID}` }
+          })
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -711,7 +718,7 @@ const layer = Layer.effect(
             ctx.requestStartAt = Date.now()
             // Retries re-stamp requestStartAt; keep the first attempt so prep_ms excludes backoff.
             if (ctx.firstRequestStartAt === undefined) ctx.firstRequestStartAt = ctx.requestStartAt
-            const stream = llm.stream({ ...streamInput, model: ctx.model })
+            const stream = llm.stream({ ...streamInput, messages, model: ctx.model })
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),

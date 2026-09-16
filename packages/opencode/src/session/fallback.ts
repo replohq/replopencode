@@ -1,7 +1,7 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Exit, Schema } from "effect"
 import { isRecord } from "@/util/record"
-import type { Err } from "./retry"
+import { parseJSON, type Err } from "./retry"
 import type { Provider } from "@/provider/provider"
 
 // The coordinator ships this per sandbox; it is the same shape the removed
@@ -101,9 +101,10 @@ export function route(model: ModelRef, now = Date.now()): ModelRef {
   return candidate
 }
 
-// Transport-level failures the fallback config lists, plus retryable errors
-// with no status (connection resets, stream drops, overloaded upstreams
-// reported inside a 200). Non-retryable statusless errors such as an invalid
+// Failures the fallback config lists by status, whether the status arrived as
+// an HTTP response or as the `{ code, message }` chunk OpenRouter relays inside
+// a 200 stream, plus retryable errors with no status at all (connection
+// resets, stream drops). Non-retryable statusless errors such as an invalid
 // prompt or exhausted quota stay on the requested model. Context overflow and
 // aborts are the caller's problem and never switch models.
 export function qualifies(error: Err): boolean {
@@ -117,7 +118,11 @@ export function qualifies(error: Err): boolean {
     return cfg.fallbackOnErrors.includes(status)
   }
   const message = isRecord(error.data) ? error.data.message : undefined
-  return typeof message === "string" && NETWORK_ERROR_PATTERN.test(message)
+  if (typeof message !== "string") return false
+  const json = parseJSON(message)
+  const code = json?.code ?? json?.error?.code
+  if (typeof code === "number") return cfg.fallbackOnErrors.includes(code)
+  return NETWORK_ERROR_PATTERN.test(message)
 }
 
 // Puts the failed route on cooldown and returns the one to try next, if the
@@ -126,7 +131,7 @@ export function qualifies(error: Err): boolean {
 // marked; the last route in a chain is then skipped by the steps that follow.
 export function recordFailure(input: { model: ModelRef; error: Err; swaps: number }): ModelRef | undefined {
   const cfg = config()
-  if (!cfg || !qualifies(input.error)) return undefined
+  if (!cfg || cfg.maxFallbackAttempts === 0 || !qualifies(input.error)) return undefined
   markDegraded(input.model)
   if (input.swaps >= cfg.maxFallbackAttempts) return undefined
   return fallbackFor(input.model)

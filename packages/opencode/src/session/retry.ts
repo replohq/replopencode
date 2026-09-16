@@ -169,7 +169,7 @@ function num(value: unknown) {
   return parsed
 }
 
-function parseJSON(value: unknown) {
+export function parseJSON(value: unknown) {
   return iife(() => {
     try {
       if (typeof value !== "string") return undefined

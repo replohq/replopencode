@@ -1340,6 +1340,13 @@ const layer = Layer.effect(
                 ...modelMsgs,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
+              convert: (target) =>
+                MessageV2.toModelMessagesEffect(msgs, target).pipe(
+                  Effect.map((converted) => [
+                    ...converted,
+                    ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+                  ]),
+                ),
               tools,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })

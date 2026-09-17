@@ -693,6 +693,19 @@ const layer = Layer.effect(
             if (Option.isNone(resolved)) return undefined
             ctx.model = resolved.value
             ctx.fallbacks += 1
+            // Partial reasoning and text from the failed attempts belong to the
+            // previous model; left on this message they would be replayed as the
+            // fallback model's own output. Tool parts stay: they record real effects.
+            const partial = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.orElseSucceed(() => []),
+            )
+            yield* Effect.forEach(
+              partial.filter((part) => part.type === "reasoning" || part.type === "text"),
+              (part) =>
+                session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID: part.id }),
+              { discard: true },
+            )
             if (streamInput.convert) messages = yield* streamInput.convert(ctx.model)
             yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
               "session.id": ctx.sessionID,

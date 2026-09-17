@@ -229,6 +229,31 @@ const fragmentFailureLLM = Layer.succeed(
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
+const relayedOutageLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) =>
+      input.model.id === "test-model"
+        ? Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.reasoningStart({ id: "reasoning-1" }),
+            LLMEvent.reasoningDelta({ id: "reasoning-1", text: "thinking on the dead route" }),
+            LLMEvent.textStart({ id: "text-1" }),
+            LLMEvent.textDelta({ id: "text-1", text: "partial from the dead route" }),
+            LLMEvent.providerError({ message: JSON.stringify({ code: 503, message: "Provider returned error" }) }),
+          )
+        : Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "text-2" }),
+            LLMEvent.textDelta({ id: "text-2", text: "hello" }),
+            LLMEvent.textEnd({ id: "text-2" }),
+            LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+            LLMEvent.finish({ reason: "stop" }),
+          ),
+  }),
+)
+const itRelayedOutage = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, relayedOutageLLM]]))
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -363,6 +388,9 @@ it.live("session.processor effect tests switch to the fallback model after upstr
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(3)
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
+        expect(parts.filter((part) => part.type === "text").map((part) => part.type === "text" && part.text)).toEqual([
+          "hello",
+        ])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
         expect(SessionFallback.isDegraded({ providerID: "test", modelID: "test-model" })).toBe(true)
         expect(converted).toEqual(["fallback-model"])
@@ -1183,5 +1211,50 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
         expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
       }),
     { config: cfg },
+  ),
+)
+
+itRelayedOutage.live("session.processor effect tests drop the dead route's partial output when switching models", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        SessionFallback.configure({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+        const parts = yield* MessageV2.parts(msg.id)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("continue")
+        expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
+        expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["hello"])
+        expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
+      }),
+    { config: fallbackCfg("http://localhost:1/v1") },
   ),
 )

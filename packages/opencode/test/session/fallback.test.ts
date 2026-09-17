@@ -1,0 +1,175 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Schema } from "effect"
+import { SessionFallback } from "../../src/session/fallback"
+
+const cfg: SessionFallback.Config = {
+  fallbackModelsByModel: {
+    "openrouter/anthropic/claude-sonnet-5": "anthropic/claude-sonnet-5",
+    "anthropic/claude-sonnet-5": "openrouter/anthropic/claude-sonnet-5",
+  },
+  fallbackOnErrors: [429, 503],
+  maxFallbackAttempts: 1,
+  maxUpstreamRetryAttempts: 1,
+  cooldownSeconds: 60,
+}
+const openrouter = { providerID: "openrouter", modelID: "anthropic/claude-sonnet-5" }
+const anthropic = { providerID: "anthropic", modelID: "claude-sonnet-5" }
+
+function apiError(statusCode?: number, isRetryable = true) {
+  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+    new SessionV1.APIError({ message: "boom", isRetryable, statusCode }).toObject(),
+  )
+}
+
+function useConfig(next: SessionFallback.Config) {
+  process.env[SessionFallback.ENV_VAR] = JSON.stringify(next)
+}
+
+function clean() {
+  delete process.env[SessionFallback.ENV_VAR]
+  SessionFallback.reset()
+}
+beforeEach(clean)
+afterEach(clean)
+
+describe("session.fallback config", () => {
+  test("follows the env var when a reload rewrites it", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
+    expect(SessionFallback.config()).toEqual(cfg)
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, maxFallbackAttempts: 0, fallbackModelsByModel: {} })
+    expect(SessionFallback.config()).toBeNull()
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
+    expect(SessionFallback.config()).toEqual(cfg)
+    delete process.env[SessionFallback.ENV_VAR]
+    expect(SessionFallback.config()).toBeNull()
+  })
+
+  test("drops cooldowns when the env var changes", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
+    SessionFallback.markDegraded(openrouter)
+    expect(SessionFallback.isDegraded(openrouter)).toBe(true)
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, cooldownSeconds: 30 })
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+  })
+
+  test("ignores a malformed env var", () => {
+    process.env[SessionFallback.ENV_VAR] = '{"fallbackOnErrors": "nope"}'
+    expect(SessionFallback.config()).toBeNull()
+    process.env[SessionFallback.ENV_VAR] = "not json"
+    SessionFallback.reset()
+    expect(SessionFallback.config()).toBeNull()
+  })
+
+  test("rejects negative or fractional limits", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, cooldownSeconds: -1 })
+    expect(SessionFallback.config()).toBeNull()
+    SessionFallback.reset()
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, maxFallbackAttempts: 1.5 })
+    expect(SessionFallback.config()).toBeNull()
+  })
+
+  test("does nothing without config", () => {
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
+  })
+})
+
+describe("session.fallback recordFailure", () => {
+  test("switches on listed statuses and on retryable transport errors", () => {
+    useConfig(cfg)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: anthropic, error: apiError(429), swaps: 0 })).toEqual(openrouter)
+  })
+
+  test("stays put on client errors, non-retryable statusless errors, context overflow, and unmapped models", () => {
+    useConfig(cfg)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(400), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(402), swaps: 0 })).toBeUndefined()
+    expect(
+      SessionFallback.recordFailure({ model: openrouter, error: apiError(undefined, false), swaps: 0 }),
+    ).toBeUndefined()
+    const overflow = new SessionV1.ContextOverflowError({ message: "too long" }).toObject()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: overflow, swaps: 0 })).toBeUndefined()
+    const unmapped = { providerID: "openrouter", modelID: "openai/gpt-5.6" }
+    expect(SessionFallback.recordFailure({ model: unmapped, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+  })
+
+  test("reads the status OpenRouter relays inside a 200 stream", () => {
+    useConfig(cfg)
+    const relayed = (code: number) =>
+      ({
+        name: "UnknownError",
+        data: { message: JSON.stringify({ code, message: "Provider returned error", metadata: {} }) },
+      }) as any
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(503), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(429), swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(400), swaps: 0 })).toBeUndefined()
+  })
+
+  test("a swap budget of zero turns the feature off", () => {
+    useConfig({ ...cfg, maxFallbackAttempts: 0 })
+    expect(SessionFallback.config()).toBeNull()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
+  })
+
+  test("switches on transport errors that never became API errors", () => {
+    useConfig(cfg)
+    const unknown = { name: "UnknownError", data: { message: "TypeError: fetch failed" } } as any
+    expect(SessionFallback.recordFailure({ model: openrouter, error: unknown, swaps: 0 })).toEqual(anthropic)
+  })
+
+  test("ignores map values without a provider", () => {
+    useConfig({
+      ...cfg,
+      fallbackModelsByModel: { [SessionFallback.key(openrouter)]: "claude-sonnet-5" },
+    })
+    expect(SessionFallback.fallbackFor(openrouter)).toBeUndefined()
+    expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
+  })
+
+  test("caps swaps per step but still records the failed route", () => {
+    useConfig(cfg)
+    expect(SessionFallback.recordFailure({ model: anthropic, error: apiError(503), swaps: 1 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(anthropic)).toBe(true)
+  })
+})
+
+describe("session.fallback route", () => {
+  test("routes later steps around a degraded provider until the cooldown ends", () => {
+    useConfig(cfg)
+    const now = 1_000_000
+    SessionFallback.markDegraded(openrouter, now)
+    expect(SessionFallback.route(openrouter, now)).toEqual(anthropic)
+    expect(SessionFallback.route(openrouter, now + 61_000)).toEqual(openrouter)
+  })
+
+  test("keeps the requested model when every route in the cycle is degraded", () => {
+    useConfig(cfg)
+    SessionFallback.markDegraded(openrouter)
+    SessionFallback.markDegraded(anthropic)
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
+  })
+
+  test("walks a chain of models on one provider", () => {
+    const claude = { providerID: "openrouter", modelID: "anthropic/claude-sonnet-5" }
+    const gpt = { providerID: "openrouter", modelID: "openai/gpt-5.4" }
+    const gemini = { providerID: "openrouter", modelID: "google/gemini-3.1-pro-preview" }
+    useConfig({
+      ...cfg,
+      fallbackModelsByModel: {
+        [SessionFallback.key(claude)]: SessionFallback.key(gpt),
+        [SessionFallback.key(gpt)]: SessionFallback.key(gemini),
+      },
+    })
+    SessionFallback.markDegraded(claude)
+    expect(SessionFallback.route(claude)).toEqual(gpt)
+    SessionFallback.markDegraded(gpt)
+    expect(SessionFallback.route(claude)).toEqual(gemini)
+  })
+})

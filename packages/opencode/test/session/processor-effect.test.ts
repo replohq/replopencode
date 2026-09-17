@@ -2,7 +2,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { expect } from "bun:test"
+import { afterEach, expect } from "bun:test"
 import { tool } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
@@ -20,8 +20,9 @@ import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { raw, reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { SessionFallback } from "@/session/fallback"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -186,6 +187,18 @@ const env = LayerNode.compile(
 
 const it = testEffect(env)
 
+afterEach(() => {
+  delete process.env[SessionFallback.ENV_VAR]
+  SessionFallback.reset()
+})
+
+function useFallbackConfig(config: SessionFallback.Config) {
+  process.env[SessionFallback.ENV_VAR] = JSON.stringify(config)
+}
+
+// Most tests never switch models, so reaching the converter is a test bug.
+const unconverted = () => Effect.die(new Error("this test never switches models"))
+
 const providerErrorLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -225,6 +238,56 @@ const fragmentFailureLLM = Layer.succeed(
 )
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
+
+const relayedOutageLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) =>
+      input.model.id === "test-model"
+        ? Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.reasoningStart({ id: "reasoning-1" }),
+            LLMEvent.reasoningDelta({ id: "reasoning-1", text: "thinking on the dead route" }),
+            LLMEvent.textStart({ id: "text-1" }),
+            LLMEvent.textDelta({ id: "text-1", text: "partial from the dead route" }),
+            LLMEvent.toolInputStart({ id: "call-dead", name: "lookup" }),
+            LLMEvent.providerError({ message: JSON.stringify({ code: 503, message: "Provider returned error" }) }),
+          )
+        : Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "text-2" }),
+            LLMEvent.textDelta({ id: "text-2", text: "hello" }),
+            LLMEvent.textEnd({ id: "text-2" }),
+            LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+            LLMEvent.finish({ reason: "stop" }),
+          ),
+  }),
+)
+const itRelayedOutage = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, relayedOutageLLM]]))
+
+const toolThenOutageModels: string[] = []
+const toolThenOutageLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) => {
+      toolThenOutageModels.push(input.model.id)
+      return Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+        LLMEvent.toolInputEnd({ id: "call-1", name: "lookup" }),
+        LLMEvent.toolCall({ id: "call-1", name: "lookup", input: {}, providerExecuted: true }),
+        LLMEvent.toolResult({
+          id: "call-1",
+          name: "lookup",
+          result: { type: "text", value: "done" },
+          providerExecuted: true,
+        }),
+        LLMEvent.providerError({ message: JSON.stringify({ code: 503, message: "Provider returned error" }) }),
+      )
+    },
+  }),
+)
+const itToolThenOutage = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, toolThenOutageLLM]]))
 
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
@@ -270,8 +333,9 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: unconverted,
           tools: {},
-        } satisfies LLM.StreamInput
+        } satisfies LLM.StreamInput & Pick<SessionProcessor.ProcessInput, "convert">
 
         const value = yield* handle.process(input)
         const parts = yield* MessageV2.parts(msg.id)
@@ -282,6 +346,141 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+function fallbackCfg(url: string) {
+  const base = providerCfg(url)
+  return {
+    ...base,
+    provider: {
+      ...base.provider,
+      fallback: {
+        ...base.provider.test,
+        name: "Fallback",
+        id: "fallback",
+        models: {
+          "fallback-model": {
+            ...base.provider.test.models["test-model"],
+            id: "fallback-model",
+            name: "Fallback Model",
+          },
+        },
+      },
+    },
+  }
+}
+
+it.live("session.processor effect tests switch to the fallback model after upstream retries", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 1,
+          cooldownSeconds: 60,
+        })
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(httpError(503, { error: { message: "down" } }), httpError(503, { error: { message: "down" } }))
+        yield* llm.text("hello")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const converted: string[] = []
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: (target) => {
+            converted.push(target.id)
+            return Effect.succeed([{ role: "user", content: "hi again" }])
+          },
+          tools: {},
+        })
+        const parts = yield* MessageV2.parts(msg.id)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const inputs = yield* llm.inputs
+
+        expect(value).toBe("continue")
+        expect(yield* llm.calls).toBe(3)
+        expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
+        expect(parts.filter((part) => part.type === "text").map((part) => part.type === "text" && part.text)).toEqual([
+          "hello",
+        ])
+        expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
+        expect(SessionFallback.isDegraded({ providerID: "test", modelID: "test-model" })).toBe(true)
+        expect(converted).toEqual(["fallback-model"])
+        expect(JSON.stringify(inputs.at(-1))).toContain("hi again")
+      }),
+    { config: (url) => fallbackCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests keep the requested model on the row when every route fails", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        const { processors, session, provider } = yield* boot()
+        yield* llm.push(httpError(503, { error: { message: "down" } }), httpError(503, { error: { message: "down" } }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(2)
+        expect(stored.info).toMatchObject({ providerID: "test", modelID: "test-model" })
+        expect(stored.info.role === "assistant" ? stored.info.error?.name : undefined).toBe("APIError")
+        expect(SessionFallback.isDegraded({ providerID: "fallback", modelID: "fallback-model" })).toBe(true)
+      }),
+    { config: (url) => fallbackCfg(url) },
   ),
 )
 
@@ -339,10 +538,10 @@ it.live("session.processor effect tests preserve text start time", () =>
               model: { providerID: ref.providerID, modelID: ref.modelID },
             } satisfies SessionV1.User,
             sessionID: chat.id,
-            model: mdl,
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "hi" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -401,10 +600,10 @@ it.live("session.processor effect tests stop after token overflow requests compa
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "compact" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -447,10 +646,10 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "reason" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -495,10 +694,10 @@ it.live("session.processor effect tests reset reasoning state across retries", (
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "reason" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -542,10 +741,10 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -586,10 +785,10 @@ it.live("session.processor effect tests retry recognized structured json errors"
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -641,10 +840,10 @@ it.live("session.processor effect tests publish retry status updates", () =>
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -686,10 +885,10 @@ it.live("session.processor effect tests compact on structured context overflow",
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "compact json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -729,10 +928,10 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "tool" }],
+          convert: unconverted,
           tools: {
             lookup: tool({
               description: "Look up information",
@@ -796,10 +995,10 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
               model: { providerID: ref.providerID, modelID: ref.modelID },
             } satisfies SessionV1.User,
             sessionID: chat.id,
-            model: mdl,
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "tool abort" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -875,10 +1074,10 @@ it.live("session.processor effect tests record aborted errors and idle state", (
               model: { providerID: ref.providerID, modelID: ref.modelID },
             } satisfies SessionV1.User,
             sessionID: chat.id,
-            model: mdl,
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "abort" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -938,10 +1137,10 @@ it.live("session.processor effect tests mark interruptions aborted without manua
               model: { providerID: ref.providerID, modelID: ref.modelID },
             } satisfies SessionV1.User,
             sessionID: chat.id,
-            model: mdl,
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "interrupt" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -993,10 +1192,10 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "provider tool error" }],
+          convert: unconverted,
           tools: {},
         })
         yield* off
@@ -1042,10 +1241,10 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
               model: { providerID: ref.providerID, modelID: ref.modelID },
             } satisfies SessionV1.User,
             sessionID: chat.id,
-            model: mdl,
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "provider failure" }],
+            convert: unconverted,
             tools: {},
           }),
         ).toBe("stop")
@@ -1063,5 +1262,103 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
         expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
       }),
     { config: cfg },
+  ),
+)
+
+itRelayedOutage.live("session.processor effect tests drop the dead route's partial output when switching models", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: chat.id,
+          type: "text",
+          text: "earlier output",
+        })
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
+          tools: {},
+        })
+        const parts = yield* MessageV2.parts(msg.id)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("continue")
+        expect(parts.filter((part) => part.type === "reasoning" || part.type === "tool")).toEqual([])
+        expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
+        expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
+      }),
+    { config: fallbackCfg("http://localhost:1/v1") },
+  ),
+)
+
+itToolThenOutage.live("session.processor effect tests do not switch models after a tool already ran", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        toolThenOutageModels.length = 0
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: unconverted,
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("stop")
+        expect(toolThenOutageModels).toEqual(["test-model"])
+        expect(stored.info).toMatchObject({ providerID: "test", modelID: "test-model" })
+      }),
+    { config: fallbackCfg("http://localhost:1/v1") },
   ),
 )

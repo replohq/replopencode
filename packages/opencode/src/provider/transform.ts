@@ -130,8 +130,11 @@ function normalizeMessages(
   })
 
   // Anthropic rejects messages with empty content - filter out empty string messages
-  // and remove empty text/reasoning parts from array content
-  if (model.api.npm === "@ai-sdk/anthropic") {
+  // and remove empty text/reasoning parts from array content. Claude behind
+  // OpenRouter has the same rule, and the OpenRouter provider copies a
+  // message-level cache marker onto the last text part, empty or not.
+  const claudeViaOpenRouter = model.api.npm === "@openrouter/ai-sdk-provider" && model.api.id.includes("claude")
+  if (model.api.npm === "@ai-sdk/anthropic" || claudeViaOpenRouter) {
     msgs = msgs
       .map((msg) => {
         if (typeof msg.content === "string") {
@@ -144,10 +147,14 @@ function normalizeMessages(
             return part.text !== ""
           }
           if (part.type === "reasoning") {
+            // OpenRouter keeps the Claude signature in reasoning_details on the
+            // part, so a blank signed part still has to reach the wire.
+            const openrouterDetails = part.providerOptions?.openrouter?.reasoning_details
             return (
               part.text.trim().length > 0 ||
               part.providerOptions?.anthropic?.signature != null ||
-              part.providerOptions?.anthropic?.redactedData != null
+              part.providerOptions?.anthropic?.redactedData != null ||
+              (Array.isArray(openrouterDetails) && openrouterDetails.length > 0)
             )
           }
           return true

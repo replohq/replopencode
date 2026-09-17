@@ -3,7 +3,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Context, Option, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -17,9 +17,12 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import { SessionFallback } from "./fallback"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
@@ -50,7 +53,8 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  // The model is the processor's own: it starts as the one given to create() and moves on fallback.
+  readonly process: (streamInput: ProcessInput) => Effect.Effect<Result>
 }
 
 type Input = {
@@ -70,6 +74,11 @@ type ToolCall = {
   done: Deferred.Deferred<void>
 }
 
+export type ProcessInput = Omit<LLM.StreamInput, "model"> & {
+  // Rebuilds the history for the model a fallback switches to.
+  convert: (model: Provider.Model) => Effect.Effect<LLM.StreamInput["messages"]>
+}
+
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
   shouldBreak: boolean
@@ -82,6 +91,7 @@ interface ProcessorContext extends Input {
   firstRequestStartAt: number | undefined
   snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  fallbacks: number
 }
 
 type StreamEvent = LLMEvent
@@ -104,6 +114,7 @@ const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const database = yield* Database.Service
+    const provider = yield* Provider.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       const ctx: ProcessorContext = {
@@ -121,6 +132,7 @@ const layer = Layer.effect(
         requestStartAt: undefined,
         firstRequestStartAt: undefined,
         reasoningMap: {},
+        fallbacks: 0,
       }
       let aborted = false
 
@@ -152,7 +164,7 @@ const layer = Layer.effect(
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
-          providerID: input.model.providerID,
+          providerID: ctx.model.providerID,
           aborted,
         })
 
@@ -480,6 +492,8 @@ const layer = Layer.effect(
             ctx.assistantMessage.finish = value.reason
             ctx.assistantMessage.cost += usage.cost
             ctx.assistantMessage.tokens = usage.tokens
+            ctx.assistantMessage.providerID = ctx.model.providerID
+            ctx.assistantMessage.modelID = ctx.model.id
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -662,7 +676,68 @@ const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {
+        let messages = streamInput.messages
+        // A failed read only costs the swap, never the step.
+        const readParts = () =>
+          MessageV2.parts(ctx.assistantMessage.id).pipe(
+            Effect.provideService(Database.Service, database),
+            Effect.option,
+          )
+        // Parts already on the message before this step belong to earlier work and survive a swap.
+        const earlierParts = SessionFallback.config()
+          ? Option.map(yield* readParts(), (parts) => new Set(parts.map((part) => part.id)))
+          : Option.none<Set<string>>()
+        // Swaps the step onto the configured fallback model and rebuilds the
+        // history for it. The assistant row is stamped at step-finish, so a
+        // fallback that also fails never claims to have answered.
+        const fallback = (error: SessionRetry.Err) =>
+          Effect.gen(function* () {
+            const from = SessionFallback.ref(ctx.model)
+            const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
+            if (!target) return undefined
+            const current = yield* readParts()
+            if (Option.isNone(earlierParts) || Option.isNone(current)) return undefined
+            const written = current.value.filter((part) => !earlierParts.value.has(part.id))
+            // A tool that started is missing from the history the retry sends, so
+            // another model could run it again; surface the error instead. A tool
+            // still pending only had its input streamed and never ran.
+            if (written.some((part) => part.type === "tool" && part.state.status !== "pending")) return undefined
+            const resolved = yield* provider
+              .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
+              .pipe(Effect.option)
+            if (Option.isNone(resolved)) return undefined
+            ctx.model = resolved.value
+            ctx.fallbacks += 1
+            // Partial output the failed attempts wrote belongs to the previous model;
+            // left on this message it would be replayed as the fallback's own.
+            yield* Effect.forEach(
+              written.filter(
+                (part) =>
+                  part.type === "reasoning" ||
+                  part.type === "text" ||
+                  (part.type === "tool" && part.state.status === "pending"),
+              ),
+              (part) =>
+                Effect.gen(function* () {
+                  if (part.type === "tool") yield* settleToolCall(part.callID)
+                  yield* session.removePart({
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.assistantMessage.id,
+                    partID: part.id,
+                  })
+                }),
+              { discard: true },
+            )
+            messages = yield* streamInput.convert(ctx.model)
+            yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
+              "session.id": ctx.sessionID,
+              from: SessionFallback.key(from),
+              to: SessionFallback.key(target),
+              error: error.data,
+            })
+            return { message: `${from.providerID} unavailable, continuing on ${target.providerID}/${target.modelID}` }
+          })
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -678,7 +753,7 @@ const layer = Layer.effect(
             ctx.requestStartAt = Date.now()
             // Retries re-stamp requestStartAt; keep the first attempt so prep_ms excludes backoff.
             if (ctx.firstRequestStartAt === undefined) ctx.firstRequestStartAt = ctx.requestStartAt
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream({ ...streamInput, messages, model: ctx.model })
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
@@ -700,7 +775,9 @@ const layer = Layer.effect(
             ),
             Effect.retry(
               SessionRetry.policy({
-                provider: input.model.providerID,
+                provider: () => ctx.model.providerID,
+                retries: SessionFallback.config()?.maxUpstreamRetryAttempts,
+                fallback,
                 parse,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
@@ -766,6 +843,7 @@ export const node = LayerNode.make({
     Image.node,
     EventV2Bridge.node,
     Database.node,
+    Provider.node,
   ],
 })
 

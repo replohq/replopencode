@@ -139,6 +139,8 @@ export interface Interface {
     sessionID: SessionID
     auto: boolean
     overflow?: boolean
+    // Used only when the compaction agent has no model of its own; otherwise ignored.
+    model?: Provider.Model
   }) => Effect.Effect<"continue" | "stop">
   readonly create: (input: {
     sessionID: SessionID
@@ -292,6 +294,7 @@ const layer = Layer.effect(
       sessionID: SessionID
       auto: boolean
       overflow?: boolean
+      model?: Provider.Model
     }) {
       const parent = input.messages.findLast((m) => m.info.id === input.parentID)
       if (!parent || parent.info.role !== "user") {
@@ -328,7 +331,8 @@ const layer = Layer.effect(
       const agent = yield* agents.get("compaction")
       const model = agent.model
         ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
-        : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
+        : (input.model ??
+          (yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)))
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
@@ -385,20 +389,19 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
+      const prompt = { role: "user" as const, content: [{ type: "text" as const, text: nextPrompt }] }
       const result = yield* processor.process({
         user: userMessage,
         agent,
         sessionID: input.sessionID,
         tools: {},
         system: [],
-        messages: [
-          ...modelMessages,
-          {
-            role: "user",
-            content: [{ type: "text", text: nextPrompt }],
-          },
-        ],
-        model,
+        messages: [...modelMessages, prompt],
+        convert: (target) =>
+          MessageV2.toModelMessagesEffect(msgs, target, {
+            stripMedia: true,
+            toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+          }).pipe(Effect.map((converted) => [...converted, prompt])),
       })
 
       if (result === "compact") {

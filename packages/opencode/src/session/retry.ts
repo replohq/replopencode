@@ -169,7 +169,7 @@ function num(value: unknown) {
   return parsed
 }
 
-function parseJSON(value: unknown) {
+export function parseJSON(value: unknown) {
   return iife(() => {
     try {
       if (typeof value !== "string") return undefined
@@ -181,25 +181,46 @@ function parseJSON(value: unknown) {
 }
 
 export function policy(opts: {
-  provider: string
+  // Read per attempt: the route changes when the caller swaps models.
+  provider: () => string
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
+  // Same-route retries before the fallback hook is asked. 0 disables them; omit for today's unbounded behaviour.
+  retries?: number
+  // Asked once retries are exhausted or the error is not retryable. Returning a
+  // message means the caller swapped models and the schedule should continue at once.
+  fallback?: (error: Err) => Effect.Effect<Retryable | undefined>
 }) {
+  let swapAt = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-      const retry = retryable(error, opts.provider)
-      if (!retry) return Cause.done(meta.attempt)
-      return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
-        const now = yield* Clock.currentTimeMillis
-        yield* opts.set({
-          attempt: meta.attempt,
-          message: retry.message,
-          action: retry.action,
-          next: now + wait,
+      const retry = retryable(error, opts.provider())
+      // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
+      const sinceSwap = meta.attempt - swapAt
+      const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
+      if (retry && !exhausted) {
+        return Effect.gen(function* () {
+          const wait = delay(sinceSwap, SessionV1.APIError.isInstance(error) ? error : undefined)
+          const now = yield* Clock.currentTimeMillis
+          yield* opts.set({
+            attempt: meta.attempt,
+            message: retry.message,
+            action: retry.action,
+            next: now + wait,
+          })
+          return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
         })
-        return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
+      }
+      const fallback = opts.fallback
+      if (!fallback) return Cause.done(meta.attempt)
+      return Effect.gen(function* () {
+        const swapped = yield* fallback(error)
+        if (!swapped) return yield* Cause.done(meta.attempt)
+        swapAt = meta.attempt
+        const now = yield* Clock.currentTimeMillis
+        yield* opts.set({ attempt: meta.attempt, message: swapped.message, action: swapped.action, next: now })
+        return [meta.attempt, Duration.zero] as [number, Duration.Duration]
       })
     }),
   )

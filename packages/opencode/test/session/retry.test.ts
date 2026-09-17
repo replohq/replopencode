@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Duration, Effect, Exit, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -94,7 +94,7 @@ describe("session.retry.delay", () => {
 
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
-          provider: "test",
+          provider: () => "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
           set: (info) =>
             status.set(sessionID, {
@@ -113,6 +113,48 @@ describe("session.retry.delay", () => {
         attempt: 2,
         message: "boom",
       })
+    }),
+  )
+
+  it.instance("policy hands off to fallback once same-provider attempts are spent", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-fallback-test")
+      const error = apiError({ "retry-after-ms": "0" })
+      const status = yield* SessionStatus.Service
+      let asked = 0
+
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: () => "test",
+          retries: 1,
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          fallback: () =>
+            Effect.sync(() => {
+              asked += 1
+              return asked === 1 ? { message: "swapped" } : undefined
+            }),
+          set: (info) =>
+            status.set(sessionID, {
+              type: "retry",
+              attempt: info.attempt,
+              message: info.message,
+              next: info.next,
+            }),
+        }),
+      )
+      yield* step(error)
+      expect(asked).toBe(0)
+      const swapped = yield* step(error)
+      expect(asked).toBe(1)
+      expect(Duration.toMillis(swapped.duration)).toBe(0)
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 2, message: "swapped" })
+      // The fallback model gets its own retry budget before the next handoff; the status keeps counting.
+      yield* step(error)
+      expect(asked).toBe(1)
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 3, message: "boom" })
+      const exit = yield* Effect.exit(step(error))
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(asked).toBe(2)
     }),
   )
 })

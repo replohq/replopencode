@@ -35,6 +35,7 @@ import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { Question } from "@/question"
 import { SessionStatus } from "./status"
+import { SessionFallback } from "./fallback"
 import { LLM } from "./llm"
 import { Shell } from "@opencode-ai/core/shell"
 import { ShellID } from "@/tool/shell/id"
@@ -1181,7 +1182,16 @@ const layer = Layer.effect(
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const requested = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const from = SessionFallback.ref(requested)
+          const route = SessionFallback.route(from)
+          // A route the sandbox cannot resolve is a config mistake, not a reason to fail the turn.
+          const model =
+            route === from
+              ? requested
+              : yield* provider
+                  .getModel(ProviderV2.ID.make(route.providerID), ModelV2.ID.make(route.modelID))
+                  .pipe(Effect.option, Effect.map(Option.getOrElse(() => requested)))
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
@@ -1196,6 +1206,7 @@ const layer = Layer.effect(
               sessionID,
               auto: task.auto,
               overflow: task.overflow,
+              model,
             })
             if (result === "stop") break
             continue
@@ -1330,8 +1341,14 @@ const layer = Layer.effect(
                 ...modelMsgs,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
+              convert: (target) =>
+                MessageV2.toModelMessagesEffect(msgs, target).pipe(
+                  Effect.map((converted) => [
+                    ...converted,
+                    ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+                  ]),
+                ),
               tools,
-              model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 

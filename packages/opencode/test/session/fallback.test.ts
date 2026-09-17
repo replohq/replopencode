@@ -30,11 +30,15 @@ beforeEach(clean)
 afterEach(clean)
 
 describe("session.fallback config", () => {
-  test("reads the coordinator env var once", () => {
+  test("follows the env var when a reload rewrites it", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
+    expect(SessionFallback.config()).toEqual(cfg)
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, maxFallbackAttempts: 0, fallbackModelsByModel: {} })
+    expect(SessionFallback.config()).toBeNull()
     process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
     expect(SessionFallback.config()).toEqual(cfg)
     delete process.env[SessionFallback.ENV_VAR]
-    expect(SessionFallback.config()).toEqual(cfg)
+    expect(SessionFallback.config()).toBeNull()
   })
 
   test("ignores a malformed env var", () => {
@@ -93,10 +97,12 @@ describe("session.fallback recordFailure", () => {
     expect(SessionFallback.recordFailure({ model: openrouter, error: relayed(400), swaps: 0 })).toBeUndefined()
   })
 
-  test("a swap budget of zero also leaves later steps alone", () => {
+  test("a swap budget of zero turns the feature off", () => {
     SessionFallback.configure({ ...cfg, maxFallbackAttempts: 0 })
+    expect(SessionFallback.config()).toBeNull()
     expect(SessionFallback.recordFailure({ model: openrouter, error: apiError(503), swaps: 0 })).toBeUndefined()
     expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
   })
 
   test("switches on transport errors that never became API errors", () => {

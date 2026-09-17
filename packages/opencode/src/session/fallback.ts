@@ -28,30 +28,42 @@ export function ref(model: Provider.Model): ModelRef {
 const NETWORK_ERROR_PATTERN =
   /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network error|terminated/i
 
-let loaded = false
+let injected = false
+let lastRaw: string | undefined
 let current: Config | null = null
 const degradedUntil = new Map<string, number>()
 
+// A swap budget of zero turns the feature off entirely, same-route retry cap
+// included, so a project can opt out by shipping a config instead of deleting one.
+function active(cfg: Config): Config | null {
+  return cfg.maxFallbackAttempts === 0 ? null : cfg
+}
+
+// Re-read whenever the env string changes: a harness reload rewrites
+// process.env in place, and the coordinator's opt-out arrives that way.
 export function config(): Config | null {
-  if (loaded) return current
-  loaded = true
+  if (injected) return current
   const raw = process.env[ENV_VAR]
-  if (!raw) return null
+  if (raw === lastRaw) return current
+  lastRaw = raw
+  current = null
+  if (!raw) return current
   const exit = decode(raw)
-  if (Exit.isSuccess(exit)) current = exit.value
+  if (Exit.isSuccess(exit)) current = active(exit.value)
   else console.error("[model-fallback] ignoring invalid config", String(exit.cause))
   return current
 }
 
 // Tests inject a config instead of setting the env var.
 export function configure(next: Config | null) {
-  loaded = true
-  current = next
+  injected = true
+  current = next && active(next)
   degradedUntil.clear()
 }
 
 export function reset() {
-  loaded = false
+  injected = false
+  lastRaw = undefined
   current = null
   degradedUntil.clear()
 }
@@ -131,7 +143,7 @@ export function qualifies(error: Err): boolean {
 // marked; the last route in a chain is then skipped by the steps that follow.
 export function recordFailure(input: { model: ModelRef; error: Err; swaps: number }): ModelRef | undefined {
   const cfg = config()
-  if (!cfg || cfg.maxFallbackAttempts === 0 || !qualifies(input.error)) return undefined
+  if (!cfg || !qualifies(input.error)) return undefined
   markDegraded(input.model)
   if (input.swaps >= cfg.maxFallbackAttempts) return undefined
   return fallbackFor(input.model)

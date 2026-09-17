@@ -694,6 +694,13 @@ const layer = Layer.effect(
             const from = SessionFallback.ref(ctx.model)
             const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
             if (!target) return undefined
+            const written = (yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.orElseSucceed(() => []),
+            )).filter((part) => !earlierParts.has(part.id))
+            // A tool that already ran is missing from the history the retry sends,
+            // so another model could run it again; surface the error instead.
+            if (written.some((part) => part.type === "tool")) return undefined
             const resolved = yield* provider
               .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
               .pipe(Effect.option)
@@ -702,15 +709,9 @@ const layer = Layer.effect(
             ctx.fallbacks += 1
             // Partial reasoning and text the failed attempts wrote belong to the
             // previous model; left on this message they would be replayed as the
-            // fallback model's own output. Tool parts stay: they record real effects.
-            const partial = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
-              Effect.provideService(Database.Service, database),
-              Effect.orElseSucceed(() => []),
-            )
+            // fallback model's own output.
             yield* Effect.forEach(
-              partial.filter(
-                (part) => !earlierParts.has(part.id) && (part.type === "reasoning" || part.type === "text"),
-              ),
+              written.filter((part) => part.type === "reasoning" || part.type === "text"),
               (part) =>
                 session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID: part.id }),
               { discard: true },

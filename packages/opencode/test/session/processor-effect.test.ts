@@ -254,6 +254,30 @@ const relayedOutageLLM = Layer.succeed(
 )
 const itRelayedOutage = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, relayedOutageLLM]]))
 
+const toolThenOutageModels: string[] = []
+const toolThenOutageLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) => {
+      toolThenOutageModels.push(input.model.id)
+      return Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+        LLMEvent.toolInputEnd({ id: "call-1", name: "lookup" }),
+        LLMEvent.toolCall({ id: "call-1", name: "lookup", input: {}, providerExecuted: true }),
+        LLMEvent.toolResult({
+          id: "call-1",
+          name: "lookup",
+          result: { type: "text", value: "done" },
+          providerExecuted: true,
+        }),
+        LLMEvent.providerError({ message: JSON.stringify({ code: 503, message: "Provider returned error" }) }),
+      )
+    },
+  }),
+)
+const itToolThenOutage = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, toolThenOutageLLM]]))
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -1261,6 +1285,50 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
         expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
+      }),
+    { config: fallbackCfg("http://localhost:1/v1") },
+  ),
+)
+
+itToolThenOutage.live("session.processor effect tests do not switch models after a tool already ran", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        SessionFallback.configure({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 0,
+          cooldownSeconds: 60,
+        })
+        toolThenOutageModels.length = 0
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("stop")
+        expect(toolThenOutageModels).toEqual(["test-model"])
+        expect(stored.info).toMatchObject({ providerID: "test", modelID: "test-model" })
       }),
     { config: fallbackCfg("http://localhost:1/v1") },
   ),

@@ -30,6 +30,12 @@ export const boundedData = (value: unknown, label: string): unknown => copyIn(va
 export const coerceToString = (value: unknown): string => {
   if (value === null) return "null"
   if (value === undefined) return "undefined"
+  // `catch (e) { return String(e) }` is the common idiom; "[object Object]" would discard the tool's message.
+  const errorName = errorBrandName(value)
+  if (errorName !== undefined) {
+    const message = (value as { message?: unknown }).message
+    return typeof message === "string" && message !== "" ? `${errorName}: ${message}` : errorName
+  }
   if (value instanceof SandboxDate)
     return Number.isFinite(value.time) ? new Date(value.time).toISOString() : "Invalid Date"
   if (value instanceof SandboxRegExp) return `/${value.regex.source}/${value.regex.flags}`
@@ -60,6 +66,8 @@ export const invokeCoercion = (ref: CoercionFunction, args: Array<unknown>, node
     if (ref.name === "parseInt") return parseInt(coerceToString(raw))
     return parseFloat(coerceToString(raw))
   }
+  // The bounded copy below drops an error value's brand, and with it the message.
+  if (ref.name === "String" && errorBrandName(raw) !== undefined) return coerceToString(raw)
   const value = boundedData(args[0], `${ref.name} input`)
   if (ref.name === "Number") return coerceToNumber(value)
   if (ref.name === "Boolean") return Boolean(value)

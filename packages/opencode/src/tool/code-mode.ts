@@ -115,6 +115,19 @@ function projectMcpResult(result: CallToolResult, collect: (attachment: Attachme
   return null
 }
 
+// The model knows `find-registry-items` as an agent tool and reaches for it inside a script as
+// `tools.<server>.find_registry_items`; no search of the MCP catalog can correct that.
+function agentToolHint(path: ReadonlyArray<string>, toolIDs: unknown): string | undefined {
+  if (!Array.isArray(toolIDs)) return
+  const fold = (name: string) => name.toLowerCase().replaceAll(/[-_]/g, "")
+  const wanted = fold(path.at(-1) ?? "")
+  const match = toolIDs.find(
+    (id): id is string => typeof id === "string" && id !== CODE_MODE_TOOL && fold(id) === wanted,
+  )
+  if (match === undefined) return
+  return `'${match}' is one of your regular tools, not a Code Mode tool. Call it directly, outside ${CODE_MODE_TOOL}.`
+}
+
 type Run = (input: unknown) => Effect.Effect<unknown, unknown>
 
 function toolTree(catalog: readonly CatalogEntry[], run: (entry: CatalogEntry) => Run) {
@@ -248,6 +261,7 @@ export const CodeModeTool = Tool.define(
 
         const runtime = CodeMode.make({
           tools: toolTree(catalog, callTool),
+          unknownToolHint: (path) => agentToolHint(path, ctx.extra?.toolIDs),
           onToolCallStart: ({ index, name, input }) =>
             Effect.suspend(() => {
               const shown = (() => {

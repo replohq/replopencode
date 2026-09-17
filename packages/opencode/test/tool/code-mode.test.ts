@@ -348,6 +348,23 @@ describe("code mode execute", () => {
     expect(error.message).toContain("Unknown tool 'known.missing'")
   })
 
+  test("an unknown tool names the closest MCP tool so the retry needs no search", async () => {
+    const tool = await build({ bedrock_registry_find_items: mcpTool("registry_find_items", () => "ok") })
+    const error = await failure(tool.execute({ code: "return await tools.bedrock.find_registry_items({})" }, ctx))
+    expect(error.message).toContain("Did you mean: tools.bedrock.registry_find_items(")
+  })
+
+  test("a regular agent tool called inside a script is sent back to a direct call", async () => {
+    const tool = await build({ bedrock_list_sites: mcpTool("list_sites", () => "ok") })
+    const error = await failure(
+      tool.execute(
+        { code: "return await tools.bedrock.set_project_context({})" },
+        { ...ctx, extra: { toolIDs: ["read", "set-project-context", CODE_MODE_TOOL] } },
+      ),
+    )
+    expect(error.message).toContain("'set-project-context' is one of your regular tools")
+  })
+
   test("propagates an MCP tool error into the program as a catchable failure", async () => {
     const tool = await build({
       bad_tool: mcpTool("tool", () => ({ isError: true, content: [{ type: "text", text: "server exploded" }] })),

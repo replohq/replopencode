@@ -49,6 +49,8 @@ export type ExecuteOptions<Tools extends Record<string, unknown> = {}> = {
   onToolCallStart?: (call: ToolRuntime.ToolCallStarted) => Effect.Effect<void, never, Services<Tools>>
   /** Observes each admitted tool call as it settles, with outcome and duration. */
   onToolCallEnd?: (call: ToolRuntime.ToolCallEnded) => Effect.Effect<void, never, Services<Tools>>
+  /** Explains an unknown tool path the host recognizes from outside Code Mode; replaces the default suggestions. */
+  unknownToolHint?: (path: ReadonlyArray<string>) => string | undefined
 }
 
 /** A JSON value that can cross the confined interpreter boundary. */

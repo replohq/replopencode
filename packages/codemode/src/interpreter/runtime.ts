@@ -112,8 +112,21 @@ import {
   SandboxURLSearchParams,
 } from "../values.js"
 
+const PROGRAM_PREFIX = "async function __codemode__() {\n"
+
+// A long one-line script gives no clue where it broke, so the retry re-emits it blind.
+// The offset is shifted back by the wrapper line the program is parsed inside.
+const formatParsePosition = (code: string, start: number | undefined): string => {
+  if (start === undefined) return ""
+  const offset = Math.min(Math.max(start - PROGRAM_PREFIX.length, 0), code.length)
+  const lineStart = code.lastIndexOf("\n", offset - 1) + 1
+  const line = code.slice(0, lineStart).split("\n").length
+  const excerpt = code.slice(Math.max(lineStart, offset - 40), offset + 20).replace(/\s+/g, " ")
+  return ` (line ${line}, col ${offset - lineStart + 1}) near: ${excerpt}`
+}
+
 const parseProgram = (code: string): ProgramNode => {
-  const transpiled = transpileModule(`async function __codemode__() {\n${code}\n}`, {
+  const transpiled = transpileModule(`${PROGRAM_PREFIX}${code}\n}`, {
     reportDiagnostics: true,
     compilerOptions: {
       target: ScriptTarget.ESNext,
@@ -124,7 +137,7 @@ const parseProgram = (code: string): ProgramNode => {
 
   if (diagnostic) {
     throw new InterpreterRuntimeError(
-      `Failed to parse TypeScript: ${flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`,
+      `Failed to parse TypeScript: ${flattenDiagnosticMessageText(diagnostic.messageText, "\n")}${formatParsePosition(code, diagnostic.start)}`,
       undefined,
       "ParseError",
     )
@@ -2913,7 +2926,11 @@ class Interpreter<R> {
           const raw = yield* self.evaluateExpression(asNode(expressions[index], "expressions"))
           // The preserving checkpoint keeps sandbox values intact, so coerceToString renders
           // them directly (ISO date, /regex/ literal form) instead of a JSON-serialized husk.
-          output += coerceToString(boundedData(raw, "Template interpolation"))
+          // An error value is read before the bounded copy, which would drop its brand.
+          output +=
+            errorBrandName(raw) === undefined
+              ? coerceToString(boundedData(raw, "Template interpolation"))
+              : coerceToString(raw)
         }
       }
 
@@ -3345,6 +3362,7 @@ export const executeWithLimits = <const Tools extends Record<string, unknown>>(
   const hooks = {
     ...(options.onToolCallStart === undefined ? {} : { onToolCallStart: options.onToolCallStart }),
     ...(options.onToolCallEnd === undefined ? {} : { onToolCallEnd: options.onToolCallEnd }),
+    ...(options.unknownToolHint === undefined ? {} : { unknownToolHint: options.unknownToolHint }),
   }
   const tools = ToolRuntime.make(
     (options.tools ?? {}) as HostTools<Services<Tools>>,

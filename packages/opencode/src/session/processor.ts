@@ -718,7 +718,14 @@ const layer = Layer.effect(
                   (part.type === "tool" && part.state.status === "pending"),
               ),
               (part) =>
-                session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID: part.id }),
+                Effect.gen(function* () {
+                  if (part.type === "tool") yield* settleToolCall(part.callID)
+                  yield* session.removePart({
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.assistantMessage.id,
+                    partID: part.id,
+                  })
+                }),
               { discard: true },
             )
             if (streamInput.convert) messages = yield* streamInput.convert(ctx.model)

@@ -25,6 +25,7 @@ import { BashArity } from "@/permission/arity"
 export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
+const FORCE_KILL_AFTER = "3 seconds"
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -297,6 +298,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
       env,
       stdin: "ignore",
       detached: false,
+      forceKillAfter: FORCE_KILL_AFTER,
     })
   }
 
@@ -306,6 +308,8 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     env,
     stdin: "ignore",
     detached: process.platform !== "win32",
+    // Scope interruption also terminates the process, outside the timeout/abort handlers.
+    forceKillAfter: FORCE_KILL_AFTER,
   })
 }
 const parser = lazy(async () => {
@@ -547,11 +551,11 @@ export const ShellTool = Tool.define(
 
           if (exit.kind === "abort") {
             aborted = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+            yield* handle.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.orDie)
           }
           if (exit.kind === "timeout") {
             expired = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+            yield* handle.kill({ forceKillAfter: FORCE_KILL_AFTER }).pipe(Effect.orDie)
           }
 
           return exit.kind === "exit" ? exit.code : null

@@ -1,7 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
 import path from "path"
@@ -1007,6 +1007,35 @@ describe("tool.shell permissions", () => {
 })
 
 describe("tool.shell abort", () => {
+  it.live(
+    "bounds cleanup when an interrupted command ignores SIGTERM",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          if (process.platform === "win32") return
+          const ready = yield* Deferred.make<void>()
+          const fiber = yield* run(
+            {
+              command: `node -e 'process.on("SIGTERM", () => {}); console.log("ready"); setTimeout(() => {}, 15000)'`,
+            },
+            {
+              ...ctx,
+              metadata: (input) =>
+                String(input.metadata?.output).includes("ready")
+                  ? Deferred.succeed(ready, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+            },
+          ).pipe(Effect.forkScoped)
+          yield* Deferred.await(ready)
+          yield* Fiber.interrupt(fiber)
+          const exit = yield* Fiber.await(fiber)
+          expect(Exit.isFailure(exit)).toBe(true)
+        }),
+      ),
+    10_000,
+  )
+
   it.live(
     "preserves output when aborted",
     () =>

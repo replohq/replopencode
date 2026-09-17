@@ -1183,10 +1183,11 @@ const layer = Layer.effect(
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
           const requested = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
-          const route = SessionFallback.route(SessionFallback.ref(requested))
+          const from = SessionFallback.ref(requested)
+          const route = SessionFallback.route(from)
           // A route the sandbox cannot resolve is a config mistake, not a reason to fail the turn.
           const model =
-            SessionFallback.key(route) === SessionFallback.key(SessionFallback.ref(requested))
+            route === from
               ? requested
               : yield* provider
                   .getModel(ProviderV2.ID.make(route.providerID), ModelV2.ID.make(route.modelID))

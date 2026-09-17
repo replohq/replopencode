@@ -187,7 +187,17 @@ const env = LayerNode.compile(
 
 const it = testEffect(env)
 
-afterEach(() => SessionFallback.reset())
+afterEach(() => {
+  delete process.env[SessionFallback.ENV_VAR]
+  SessionFallback.reset()
+})
+
+function useFallbackConfig(config: SessionFallback.Config) {
+  process.env[SessionFallback.ENV_VAR] = JSON.stringify(config)
+}
+
+// Most tests never switch models, so reaching the converter is a test bug.
+const unconverted = () => Effect.die(new Error("this test never switches models"))
 
 const providerErrorLLM = Layer.succeed(
   LLM.Service,
@@ -323,8 +333,9 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: unconverted,
           tools: {},
-        } satisfies LLM.StreamInput
+        } satisfies LLM.StreamInput & Pick<SessionProcessor.ProcessInput, "convert">
 
         const value = yield* handle.process(input)
         const parts = yield* MessageV2.parts(msg.id)
@@ -364,7 +375,7 @@ it.live("session.processor effect tests switch to the fallback model after upstr
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
-        SessionFallback.configure({
+        useFallbackConfig({
           fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
           fallbackOnErrors: [503],
           maxFallbackAttempts: 1,
@@ -429,7 +440,7 @@ it.live("session.processor effect tests keep the requested model on the row when
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
-        SessionFallback.configure({
+        useFallbackConfig({
           fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
           fallbackOnErrors: [503],
           maxFallbackAttempts: 1,
@@ -458,6 +469,7 @@ it.live("session.processor effect tests keep the requested model on the row when
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
           tools: {},
         })
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
@@ -529,6 +541,7 @@ it.live("session.processor effect tests preserve text start time", () =>
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "hi" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -590,6 +603,7 @@ it.live("session.processor effect tests stop after token overflow requests compa
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "compact" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -635,6 +649,7 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "reason" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -682,6 +697,7 @@ it.live("session.processor effect tests reset reasoning state across retries", (
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "reason" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -728,6 +744,7 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -771,6 +788,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -825,6 +843,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -869,6 +888,7 @@ it.live("session.processor effect tests compact on structured context overflow",
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "compact json" }],
+          convert: unconverted,
           tools: {},
         })
 
@@ -911,6 +931,7 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "tool" }],
+          convert: unconverted,
           tools: {
             lookup: tool({
               description: "Look up information",
@@ -977,6 +998,7 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "tool abort" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -1055,6 +1077,7 @@ it.live("session.processor effect tests record aborted errors and idle state", (
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "abort" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -1117,6 +1140,7 @@ it.live("session.processor effect tests mark interruptions aborted without manua
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "interrupt" }],
+            convert: unconverted,
             tools: {},
           })
           .pipe(Effect.forkChild)
@@ -1171,6 +1195,7 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "provider tool error" }],
+          convert: unconverted,
           tools: {},
         })
         yield* off
@@ -1219,6 +1244,7 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
             agent: agent(),
             system: [],
             messages: [{ role: "user", content: "provider failure" }],
+            convert: unconverted,
             tools: {},
           }),
         ).toBe("stop")
@@ -1243,7 +1269,7 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
   provideTmpdirInstance(
     (dir) =>
       Effect.gen(function* () {
-        SessionFallback.configure({
+        useFallbackConfig({
           fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
           fallbackOnErrors: [503],
           maxFallbackAttempts: 1,
@@ -1278,6 +1304,7 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
           tools: {},
         })
         const parts = yield* MessageV2.parts(msg.id)
@@ -1298,7 +1325,7 @@ itToolThenOutage.live("session.processor effect tests do not switch models after
   provideTmpdirInstance(
     (dir) =>
       Effect.gen(function* () {
-        SessionFallback.configure({
+        useFallbackConfig({
           fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
           fallbackOnErrors: [503],
           maxFallbackAttempts: 1,
@@ -1326,6 +1353,7 @@ itToolThenOutage.live("session.processor effect tests do not switch models after
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "hi" }],
+          convert: unconverted,
           tools: {},
         })
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })

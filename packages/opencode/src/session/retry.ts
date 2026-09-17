@@ -181,21 +181,21 @@ export function parseJSON(value: unknown) {
 }
 
 export function policy(opts: {
-  provider: string | (() => string)
+  // Read per attempt: the route changes when the caller swaps models.
+  provider: () => string
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
   // Same-route retries before the fallback hook is asked. 0 disables them; omit for today's unbounded behaviour.
   retries?: number
   // Asked once retries are exhausted or the error is not retryable. Returning a
   // message means the caller swapped models and the schedule should continue at once.
-  fallback?: (error: Err, attempt: number) => Effect.Effect<Retryable | undefined>
+  fallback?: (error: Err) => Effect.Effect<Retryable | undefined>
 }) {
   let swapAt = 0
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-      const provider = typeof opts.provider === "function" ? opts.provider() : opts.provider
-      const retry = retryable(error, provider)
+      const retry = retryable(error, opts.provider())
       // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
       const sinceSwap = meta.attempt - swapAt
       const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
@@ -215,7 +215,7 @@ export function policy(opts: {
       const fallback = opts.fallback
       if (!fallback) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
-        const swapped = yield* fallback(error, meta.attempt)
+        const swapped = yield* fallback(error)
         if (!swapped) return yield* Cause.done(meta.attempt)
         swapAt = meta.attempt
         const now = yield* Clock.currentTimeMillis

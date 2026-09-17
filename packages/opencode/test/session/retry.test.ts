@@ -94,7 +94,7 @@ describe("session.retry.delay", () => {
 
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
-          provider: "test",
+          provider: () => "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
           set: (info) =>
             status.set(sessionID, {
@@ -121,17 +121,17 @@ describe("session.retry.delay", () => {
       const sessionID = SessionID.make("session-fallback-test")
       const error = apiError({ "retry-after-ms": "0" })
       const status = yield* SessionStatus.Service
-      const seen: number[] = []
+      let asked = 0
 
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: () => "test",
           retries: 1,
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
-          fallback: (_, attempt) =>
+          fallback: () =>
             Effect.sync(() => {
-              seen.push(attempt)
-              return seen.length === 1 ? { message: "swapped" } : undefined
+              asked += 1
+              return asked === 1 ? { message: "swapped" } : undefined
             }),
           set: (info) =>
             status.set(sessionID, {
@@ -143,18 +143,18 @@ describe("session.retry.delay", () => {
         }),
       )
       yield* step(error)
-      expect(seen).toEqual([])
+      expect(asked).toBe(0)
       const swapped = yield* step(error)
-      expect(seen).toEqual([2])
+      expect(asked).toBe(1)
       expect(Duration.toMillis(swapped.duration)).toBe(0)
       expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 2, message: "swapped" })
       // The fallback model gets its own retry budget before the next handoff; the status keeps counting.
       yield* step(error)
-      expect(seen).toEqual([2])
+      expect(asked).toBe(1)
       expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: 3, message: "boom" })
       const exit = yield* Effect.exit(step(error))
       expect(Exit.isFailure(exit)).toBe(true)
-      expect(seen).toEqual([2, 4])
+      expect(asked).toBe(2)
     }),
   )
 })

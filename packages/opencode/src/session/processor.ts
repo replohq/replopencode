@@ -75,9 +75,8 @@ type ToolCall = {
 }
 
 export type ProcessInput = Omit<LLM.StreamInput, "model"> & {
-  // Rebuilds the history for a model other than the one the caller converted it for;
-  // without it a fallback keeps the caller's messages as they are.
-  convert?: (model: Provider.Model) => Effect.Effect<LLM.StreamInput["messages"]>
+  // Rebuilds the history for the model a fallback switches to.
+  convert: (model: Provider.Model) => Effect.Effect<LLM.StreamInput["messages"]>
 }
 
 interface ProcessorContext extends Input {
@@ -679,13 +678,10 @@ const layer = Layer.effect(
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {
         let messages = streamInput.messages
+        const readParts = () =>
+          MessageV2.parts(ctx.assistantMessage.id).pipe(Effect.provideService(Database.Service, database))
         // Parts already on the message before this step belong to earlier work and survive a swap.
-        const earlierParts = new Set(
-          (yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
-            Effect.provideService(Database.Service, database),
-            Effect.orElseSucceed(() => []),
-          )).map((part) => part.id),
-        )
+        const earlierParts = new Set((yield* readParts()).map((part) => part.id))
         // Swaps the step onto the configured fallback model and rebuilds the
         // history for it. The assistant row is stamped at step-finish, so a
         // fallback that also fails never claims to have answered.
@@ -694,10 +690,7 @@ const layer = Layer.effect(
             const from = SessionFallback.ref(ctx.model)
             const target = SessionFallback.recordFailure({ model: from, error, swaps: ctx.fallbacks })
             if (!target) return undefined
-            const written = (yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
-              Effect.provideService(Database.Service, database),
-              Effect.orElseSucceed(() => []),
-            )).filter((part) => !earlierParts.has(part.id))
+            const written = (yield* readParts()).filter((part) => !earlierParts.has(part.id))
             // A tool that started is missing from the history the retry sends, so
             // another model could run it again; surface the error instead. A tool
             // still pending only had its input streamed and never ran.
@@ -728,7 +721,7 @@ const layer = Layer.effect(
                 }),
               { discard: true },
             )
-            if (streamInput.convert) messages = yield* streamInput.convert(ctx.model)
+            messages = yield* streamInput.convert(ctx.model)
             yield* Effect.logWarning("[model-fallback] switched model after provider failure", {
               "session.id": ctx.sessionID,
               from: SessionFallback.key(from),

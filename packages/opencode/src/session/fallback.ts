@@ -28,7 +28,6 @@ export function ref(model: Provider.Model): ModelRef {
 const NETWORK_ERROR_PATTERN =
   /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network error|terminated/i
 
-let injected = false
 let lastRaw: string | undefined
 let current: Config | null = null
 const degradedUntil = new Map<string, number>()
@@ -42,7 +41,6 @@ function active(cfg: Config): Config | null {
 // Re-read whenever the env string changes: a harness reload rewrites
 // process.env in place, and the coordinator's opt-out arrives that way.
 export function config(): Config | null {
-  if (injected) return current
   const raw = process.env[ENV_VAR]
   if (raw === lastRaw) return current
   lastRaw = raw
@@ -56,15 +54,7 @@ export function config(): Config | null {
   return current
 }
 
-// Tests inject a config instead of setting the env var.
-export function configure(next: Config | null) {
-  injected = true
-  current = next && active(next)
-  degradedUntil.clear()
-}
-
 export function reset() {
-  injected = false
   lastRaw = undefined
   current = null
   degradedUntil.clear()
@@ -101,8 +91,8 @@ export function isDegraded(model: ModelRef, now = Date.now()) {
 
 // The route a step should start on: follows the fallback chain past every
 // route that is cooling down, so the steps after a failure start on the route
-// that just worked. Returns a config route, which the caller still has to
-// resolve against the provider registry.
+// that just worked. Returns the same object when nothing changes, otherwise a
+// config route the caller still has to resolve against the provider registry.
 export function route(model: ModelRef, now = Date.now()): ModelRef {
   if (!config()) return model
   const seen = new Set<string>([key(model)])
@@ -122,7 +112,7 @@ export function route(model: ModelRef, now = Date.now()): ModelRef {
 // resets, stream drops). Non-retryable statusless errors such as an invalid
 // prompt or exhausted quota stay on the requested model. Context overflow and
 // aborts are the caller's problem and never switch models.
-export function qualifies(error: Err): boolean {
+function qualifies(error: Err): boolean {
   const cfg = config()
   if (!cfg) return false
   if (SessionV1.ContextOverflowError.isInstance(error)) return false

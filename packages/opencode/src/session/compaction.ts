@@ -380,6 +380,38 @@ const layer = Layer.effect(
         },
       }
       yield* session.updateMessage(msg)
+
+      // NOTE (Yuxin, 2026-09-03, REPL-31509): an overflow compaction whose previous
+      // summary produced no finished assistant step is a loop, not progress — the
+      // replayed message itself does not fit. Fail the turn on the summary row so
+      // the pending compaction task is consumed instead of re-firing next prompt.
+      // Checked against the full transcript: with a replay, `history` already
+      // dropped the replayed turn, which is exactly where progress would show.
+      const previous = prior.at(-1)
+      const stalled =
+        input.overflow === true &&
+        previous !== undefined &&
+        !input.messages
+          .slice(previous.assistantIndex + 1)
+          .some((m) => m.info.role === "assistant" && m.info.finish && !m.info.error)
+      const replayTooLarge =
+        replay !== undefined && Token.estimate(JSON.stringify(replay.parts)) >= usable({ cfg, model })
+      if (stalled || replayTooLarge) {
+        msg.error = new SessionV1.ContextOverflowError({
+          message:
+            "The last message is too large for the model's context window even after compaction. Remove or shorten the large attachment, or start a new chat.",
+        }).toObject()
+        msg.finish = "error"
+        msg.time.completed = Date.now()
+        yield* session.updateMessage(msg)
+        yield* Effect.logWarning("compaction stalled on oversized message", {
+          sessionID: input.sessionID,
+          stalled,
+          replayTooLarge,
+        })
+        return "stop"
+      }
+
       const processor = yield* processors.create({
         assistantMessage: msg,
         sessionID: input.sessionID,

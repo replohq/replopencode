@@ -41,6 +41,15 @@ describe("session.fallback config", () => {
     expect(SessionFallback.config()).toBeNull()
   })
 
+  test("drops cooldowns when the env var changes", () => {
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify(cfg)
+    SessionFallback.markDegraded(openrouter)
+    expect(SessionFallback.isDegraded(openrouter)).toBe(true)
+    process.env[SessionFallback.ENV_VAR] = JSON.stringify({ ...cfg, cooldownSeconds: 30 })
+    expect(SessionFallback.route(openrouter)).toEqual(openrouter)
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+  })
+
   test("ignores a malformed env var", () => {
     process.env[SessionFallback.ENV_VAR] = '{"fallbackOnErrors": "nope"}'
     expect(SessionFallback.config()).toBeNull()

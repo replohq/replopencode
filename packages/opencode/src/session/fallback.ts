@@ -47,6 +47,8 @@ export function config(): Config | null {
   if (raw === lastRaw) return current
   lastRaw = raw
   current = null
+  // Cooldowns were recorded under the previous config and may name routes it no longer has.
+  degradedUntil.clear()
   if (!raw) return current
   const exit = decode(raw)
   if (Exit.isSuccess(exit)) current = active(exit.value)
@@ -102,6 +104,7 @@ export function isDegraded(model: ModelRef, now = Date.now()) {
 // that just worked. Returns a config route, which the caller still has to
 // resolve against the provider registry.
 export function route(model: ModelRef, now = Date.now()): ModelRef {
+  if (!config()) return model
   const seen = new Set<string>([key(model)])
   let candidate = model
   while (isDegraded(candidate, now)) {

@@ -679,6 +679,13 @@ const layer = Layer.effect(
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {
         let messages = streamInput.messages
+        // Parts already on the message before this step belong to earlier work and survive a swap.
+        const earlierParts = new Set(
+          (yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+            Effect.provideService(Database.Service, database),
+            Effect.orElseSucceed(() => []),
+          )).map((part) => part.id),
+        )
         // Swaps the step onto the configured fallback model and rebuilds the
         // history for it. The assistant row is stamped at step-finish, so a
         // fallback that also fails never claims to have answered.
@@ -693,7 +700,7 @@ const layer = Layer.effect(
             if (Option.isNone(resolved)) return undefined
             ctx.model = resolved.value
             ctx.fallbacks += 1
-            // Partial reasoning and text from the failed attempts belong to the
+            // Partial reasoning and text the failed attempts wrote belong to the
             // previous model; left on this message they would be replayed as the
             // fallback model's own output. Tool parts stay: they record real effects.
             const partial = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
@@ -701,7 +708,9 @@ const layer = Layer.effect(
               Effect.orElseSucceed(() => []),
             )
             yield* Effect.forEach(
-              partial.filter((part) => part.type === "reasoning" || part.type === "text"),
+              partial.filter(
+                (part) => !earlierParts.has(part.id) && (part.type === "reasoning" || part.type === "text"),
+              ),
               (part) =>
                 session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID: part.id }),
               { discard: true },

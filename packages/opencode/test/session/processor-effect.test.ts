@@ -1229,6 +1229,13 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "hi")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: chat.id,
+          type: "text",
+          text: "earlier output",
+        })
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
 
@@ -1252,7 +1259,7 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
 
         expect(value).toBe("continue")
         expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
-        expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["hello"])
+        expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
       }),
     { config: fallbackCfg("http://localhost:1/v1") },

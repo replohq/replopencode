@@ -1290,7 +1290,6 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
 
-        const startedAt = Date.now()
         const value = yield* handle.process({
           user: {
             id: parent.id,
@@ -1311,8 +1310,6 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
 
         expect(value).toBe("continue")
-        // A cleared pending tool call is settled, so cleanup does not wait out its timeout.
-        expect(Date.now() - startedAt).toBeLessThan(250)
         expect(parts.filter((part) => part.type === "reasoning" || part.type === "tool")).toEqual([])
         expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })

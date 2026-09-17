@@ -921,8 +921,26 @@ describe("session.compaction.process", () => {
         metadata: { compaction_continue: true },
       })
       if (last?.parts[0]?.type === "text") {
-        expect(last.parts[0].text).toContain("Continue if you have next steps")
+        expect(last.parts[0].text).toContain("<user_request>\nhello\n</user_request>")
+        expect(last.parts[0].text).toContain("Continue the work from Next Move")
       }
+    }),
+  )
+
+  it.instance(
+    "quotes the original request, not a prior continue prompt, on a second compaction",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const msg = yield* createUserMessage(session.id, "hello")
+      const first = yield* ssn.messages({ sessionID: session.id })
+      yield* SessionCompaction.use.process({ parentID: msg.id, messages: first, sessionID: session.id, auto: true })
+
+      const second = yield* ssn.messages({ sessionID: session.id })
+      yield* SessionCompaction.use.process({ parentID: msg.id, messages: second, sessionID: session.id, auto: true })
+
+      const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+      expect(last?.parts[0]?.type === "text" && last.parts[0].text).toContain("<user_request>\nhello\n</user_request>")
     }),
   )
 
@@ -1118,7 +1136,7 @@ describe("session.compaction.process", () => {
           (msg) =>
             msg.info.role === "user" &&
             msg.parts.some(
-              (part) => part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
+              (part) => part.type === "text" && part.synthetic && part.metadata?.compaction_continue === true,
             ),
         ),
       ).toBe(false)

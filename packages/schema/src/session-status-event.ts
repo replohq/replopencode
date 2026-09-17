@@ -5,6 +5,7 @@ import { optional } from "./schema"
 import { Event } from "./event"
 import { NonNegativeInt } from "./schema"
 import { SessionID } from "./session-id"
+import { MessageID } from "./v1/session"
 
 export const Info = Schema.Union([
   Schema.Struct({
@@ -45,6 +46,7 @@ export const Idle = Event.define({
   type: "session.idle",
   schema: {
     sessionID: SessionID,
+    messageID: optional(MessageID),
   },
 })
 

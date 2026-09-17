@@ -4,7 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { afterEach, expect } from "bun:test"
 import { tool } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
@@ -1221,12 +1221,26 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "provider failure")
+        const database = yield* Database.Service
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const seen: string[] = []
+        const terminal: { type: string; completed?: number; error?: string; messageID?: string }[] = []
         const off = yield* events.listen((event) => {
           seen.push(event.type)
-          return Effect.void
+          if (event.type !== Session.Event.Error.type && event.type !== SessionStatus.Event.Idle.type)
+            return Effect.void
+          return Effect.gen(function* () {
+            const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+            if (stored.info.role !== "assistant") throw new Error("Expected assistant message")
+            const data = Schema.decodeUnknownSync(Session.Event.Error.data)(event.data)
+            terminal.push({
+              type: event.type,
+              completed: stored.info.time.completed,
+              error: stored.info.error?.name,
+              messageID: data.messageID,
+            })
+          }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
         })
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
 
@@ -1259,6 +1273,12 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
         )
         expect(seen).toContain(MessageV2.Event.PartUpdated.type)
         expect(seen).toContain(Session.Event.Error.type)
+        expect(terminal.map((event) => event.type)).toEqual([Session.Event.Error.type, SessionStatus.Event.Idle.type])
+        for (const event of terminal) {
+          expect(event.completed).toBeNumber()
+          expect(event.error).toBeDefined()
+          expect(event.messageID).toBe(msg.id)
+        }
         expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
       }),
     { config: cfg },

@@ -90,7 +90,13 @@ const layer = Layer.effect(
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(
+        work.pipe(
+          Effect.tap((result) =>
+            result.info.role === "assistant" ? status.setMessage(sessionID, result.info.id) : Effect.void,
+          ),
+        ),
+      )
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -100,7 +106,14 @@ const layer = Layer.effect(
       ready?: Latch.Latch,
     ) {
       return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(work, ready)
+        .startShell(
+          work.pipe(
+            Effect.tap((result) =>
+              result.info.role === "assistant" ? status.setMessage(sessionID, result.info.id) : Effect.void,
+            ),
+          ),
+          ready,
+        )
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 

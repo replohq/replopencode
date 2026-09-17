@@ -646,6 +646,16 @@ const layer = Layer.effect(
         ctx.toolcalls = {}
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
+        yield* status.setMessage(ctx.sessionID, ctx.assistantMessage.id)
+        if (ctx.assistantMessage.error) {
+          // Terminal listeners must see the failed message and its final parts before settling delivery.
+          yield* events.publish(Session.Event.Error, {
+            sessionID: ctx.sessionID,
+            messageID: ctx.assistantMessage.id,
+            error: ctx.assistantMessage.error,
+          })
+          yield* status.set(ctx.sessionID, { type: "idle" })
+        }
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
@@ -660,8 +670,6 @@ const layer = Layer.effect(
           if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
             ctx.assistantMessage.error = error
             ctx.assistantMessage.finish = "error"
-            yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
-            yield* status.set(ctx.sessionID, { type: "idle" })
             return
           }
           ctx.needsCompaction = true
@@ -669,11 +677,6 @@ const layer = Layer.effect(
           return
         }
         ctx.assistantMessage.error = error
-        yield* events.publish(Session.Event.Error, {
-          sessionID: ctx.assistantMessage.sessionID,
-          error: ctx.assistantMessage.error,
-        })
-        yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: ProcessInput) {

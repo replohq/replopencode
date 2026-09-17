@@ -14,6 +14,7 @@ export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {
 
 export type Retryable = {
   message: string
+  retries?: number
   action?: {
     reason: RetryReason
     provider: string
@@ -66,9 +67,13 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
   return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
 }
 
-export function retryable(error: Err, provider: string) {
+export function retryable(error: Err, provider: string): Retryable | undefined {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+  const message = isRecord(error.data) ? error.data.message : undefined
+  if (typeof message === "string" && /\bgetaddrinfo (?:ETIMEOUT|ETIMEDOUT|EAI_AGAIN)\b/.test(message)) {
+    return { message: "Connection lookup failed. Retrying", retries: 2 }
+  }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
@@ -198,7 +203,8 @@ export function policy(opts: {
       const retry = retryable(error, opts.provider())
       // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
       const sinceSwap = meta.attempt - swapAt
-      const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
+      const retries = Math.min(opts.retries ?? Infinity, retry?.retries ?? Infinity)
+      const exhausted = sinceSwap > retries
       if (retry && !exhausted) {
         return Effect.gen(function* () {
           const wait = delay(sinceSwap, SessionV1.APIError.isInstance(error) ? error : undefined)

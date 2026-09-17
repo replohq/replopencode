@@ -10,6 +10,7 @@ import {
 } from "./tool-schema.js"
 import { isDefinition as isToolDefinition, type Definition } from "./tool.js"
 import {
+  errorBrandName,
   SandboxDate,
   SandboxMap,
   SandboxPromise,
@@ -71,10 +72,7 @@ export type ToolCallEnded = {
 export type ToolCallHooks<R = never> = {
   readonly onToolCallStart?: ((call: ToolCallStarted) => Effect.Effect<void, never, R>) | undefined
   readonly onToolCallEnd?: ((call: ToolCallEnded) => Effect.Effect<void, never, R>) | undefined
-  /**
-   * Explains an unknown tool path the host recognizes from outside Code Mode, such as a
-   * tool the agent must call directly. Code Mode itself stays unaware of host tools.
-   */
+  /** Explains an unknown tool path the host recognizes from outside Code Mode; replaces the default suggestions. */
   readonly unknownToolHint?: ((path: ReadonlyArray<string>) => string | undefined) | undefined
 }
 
@@ -216,14 +214,15 @@ const copyBounded = (
   if (preserveSandboxValues) {
     // Intra-sandbox checkpoints keep sandbox value instances alive as leaves; their contents
     // are never walked here (Map/Set members are validated where mutation happens, and the
-    // real boundary still serializes them below).
+    // real boundary still serializes them below). A caught error keeps its brand the same way.
     if (
       value instanceof SandboxDate ||
       value instanceof SandboxRegExp ||
       value instanceof SandboxMap ||
       value instanceof SandboxSet ||
       value instanceof SandboxURL ||
-      value instanceof SandboxURLSearchParams
+      value instanceof SandboxURLSearchParams ||
+      errorBrandName(value) !== undefined
     ) {
       return value
     }
@@ -388,12 +387,8 @@ const termForms = (term: string): Array<string> => {
   return forms
 }
 
-/**
- * Additive field-weighted scoring, summed across terms: exact path or path segment
- * (20) > path substring (8) > description substring (4) > any searchable text,
- * including input parameter names and descriptions (2). Best first; entries that match
- * no term are dropped unless the query has no terms.
- */
+// Field-weighted score summed across terms: exact path or segment 20, path substring 8, description 4,
+// any searchable text (input names and descriptions) 2. Entries matching no term are dropped unless the query is empty.
 const rankTools = (entries: ReadonlyArray<SearchEntry>, query: string): ReadonlyArray<SearchEntry> => {
   const terms = tokenize(query).map(termForms)
   return entries
@@ -682,7 +677,11 @@ const namespaceKeys = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): Rea
   return Object.keys(value)
 }
 
-const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<R> | Definition<R> => {
+const resolve = <R>(
+  tools: HostTools<R>,
+  path: ReadonlyArray<string>,
+  explain: (path: ReadonlyArray<string>) => ReadonlyArray<string>,
+): HostTool<R> | Definition<R> => {
   let value: HostTool<R> | Definition<R> | HostTools<R> = tools
 
   for (const segment of path) {
@@ -692,9 +691,7 @@ const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<
       isDefinition(value) ||
       !Object.hasOwn(value, segment)
     ) {
-      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, [
-        "Use tools.$codemode.search({ query }) to find available described tools.",
-      ])
+      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, explain(path))
     }
     value = value[segment] as HostTool<R> | Definition<R> | HostTools<R>
   }
@@ -754,9 +751,8 @@ export const make = <R>(
       catch: () => new ToolRuntimeError("InvalidToolOutput", `Invalid output from tool '${name}'.`),
     })
 
-  // A wrong name costs the model a search and a retry, so the failure names the closest
-  // real tool with its full signature. The host speaks first: it may know the name as one
-  // of its own tools, which no search inside Code Mode would ever find.
+  // A wrong name otherwise costs the model a search and a retry. The host speaks first: it may
+  // know the name as one of its own tools, which no search inside Code Mode would find.
   const explainUnknownTool = (path: ReadonlyArray<string>): ReadonlyArray<string> => {
     const hostHint = hooks?.unknownToolHint?.(path)
     if (hostHint !== undefined) return [hostHint]
@@ -767,21 +763,10 @@ export const make = <R>(
     const query = name.startsWith(`${namespace}_`) ? name.slice(namespace.length + 1) : name
     const [closest, ...others] = rankTools(inNamespace.length > 0 ? inNamespace : searchIndex, query).slice(0, 3)
     if (closest === undefined) return ["Use tools.$codemode.search({ query }) to find available described tools."]
-    return [
-      `Did you mean: ${closest.description.signature}`,
-      ...(others.length > 0
-        ? [`Other close matches: ${others.map((entry) => toolExpression(entry.description.path)).join(", ")}`]
-        : []),
-    ]
-  }
-
-  const resolveOrExplain = (path: ReadonlyArray<string>): HostTool<R> | Definition<R> => {
-    try {
-      return resolve(callableTools, path)
-    } catch (error) {
-      if (!(error instanceof ToolRuntimeError) || error.kind !== "UnknownTool") throw error
-      throw new ToolRuntimeError("UnknownTool", error.message, explainUnknownTool(path))
-    }
+    const hints = [`Did you mean: ${closest.description.signature}`]
+    if (others.length > 0)
+      hints.push(`Other close matches: ${others.map((entry) => toolExpression(entry.description.path)).join(", ")}`)
+    return hints
   }
 
   const recordCall = (call: ToolCall): void => {
@@ -805,7 +790,7 @@ export const make = <R>(
             recordCall(call)
             return calls.length - 1
           }).pipe(Effect.tap((index) => hooks?.onToolCallStart?.({ index, name, input }) ?? Effect.void))
-        const tool = resolveOrExplain(path)
+        const tool = resolve(callableTools, path, explainUnknownTool)
         let describedInput: unknown
         if (isDefinition(tool)) {
           if (externalArgs.length > 1)

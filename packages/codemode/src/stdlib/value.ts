@@ -12,19 +12,6 @@ export const valueConstructors = new Set(["Date", "RegExp", "Map", "Set", "URL",
 
 export const compoundOperators = new Set(["+=", "-=", "*=", "/=", "%=", "**=", "&=", "|=", "^=", "<<=", ">>=", ">>>="])
 
-const ErrorBrand: unique symbol = Symbol("codemode.error")
-
-export const createErrorValue = (name: string, message: string): SafeObject => {
-  const value = Object.assign(Object.create(null) as SafeObject, { name, message })
-  Object.defineProperty(value, ErrorBrand, { value: name })
-  return value
-}
-
-export const errorBrandName = (value: unknown): string | undefined =>
-  value !== null && typeof value === "object"
-    ? ((value as Record<PropertyKey, unknown>)[ErrorBrand] as string | undefined)
-    : undefined
-
 export const boundedData = (value: unknown, label: string): unknown => copyIn(value, label, true)
 
 export const coerceToString = (value: unknown): string => {
@@ -66,8 +53,6 @@ export const invokeCoercion = (ref: CoercionFunction, args: Array<unknown>, node
     if (ref.name === "parseInt") return parseInt(coerceToString(raw))
     return parseFloat(coerceToString(raw))
   }
-  // The bounded copy below drops an error value's brand, and with it the message.
-  if (ref.name === "String" && errorBrandName(raw) !== undefined) return coerceToString(raw)
   const value = boundedData(args[0], `${ref.name} input`)
   if (ref.name === "Number") return coerceToNumber(value)
   if (ref.name === "Boolean") return Boolean(value)
@@ -81,13 +66,10 @@ export const invokeCoercion = (ref: CoercionFunction, args: Array<unknown>, node
   if (ref.name === "parseFloat") return parseFloat(coerceToString(value))
   return coerceToString(value)
 }
+import { type AstNode, CoercionFunction, InterpreterRuntimeError } from "../interpreter/model.js"
+import { copyIn } from "../tool-runtime.js"
 import {
-  type AstNode,
-  CoercionFunction,
-  InterpreterRuntimeError,
-} from "../interpreter/model.js"
-import { copyIn, type SafeObject } from "../tool-runtime.js"
-import {
+  errorBrandName,
   isSandboxValue,
   SandboxDate,
   SandboxMap,

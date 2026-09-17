@@ -1214,6 +1214,7 @@ export type GlobalEvent = {
         type: "session.error"
         properties: {
           sessionID?: string
+          messageID?: string
           error?:
             | ProviderAuthError
             | UnknownError
@@ -1503,6 +1504,7 @@ export type GlobalEvent = {
         type: "session.idle"
         properties: {
           sessionID: string
+          messageID?: string
         }
       }
     | {
@@ -1746,6 +1748,7 @@ export type ProviderConfig = {
     baseURL?: string
     enterpriseUrl?: string
     setCacheKey?: boolean
+    promptCacheKey?: string
     /**
      * Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.
      */
@@ -5348,6 +5351,7 @@ export type SessionError = {
   location?: LocationRef
   data: {
     sessionID?: string
+    messageID?: string
     error?:
       | ProviderAuthError
       | UnknownError
@@ -5919,6 +5923,7 @@ export type SessionIdle = {
   location?: LocationRef
   data: {
     sessionID: string
+    messageID?: string
   }
 }
 
@@ -6673,6 +6678,7 @@ export type EventSessionError = {
   type: "session.error"
   properties: {
     sessionID?: string
+    messageID?: string
     error?:
       | ProviderAuthError
       | UnknownError
@@ -6937,6 +6943,7 @@ export type EventSessionIdle = {
   type: "session.idle"
   properties: {
     sessionID: string
+    messageID?: string
   }
 }
 

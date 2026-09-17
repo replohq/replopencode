@@ -160,6 +160,36 @@ describe("session.retry.delay", () => {
 })
 
 describe("session.retry.retryable", () => {
+  test.each(["ETIMEOUT", "ETIMEDOUT", "EAI_AGAIN"])("retries transient DNS %s failures", (code) => {
+    const error = MessageV2.fromError(new TypeError(`getaddrinfo ${code} proxy.example.com`), { providerID })
+    expect(SessionRetry.retryable(error, retryProvider)).toMatchObject({ retries: 2 })
+  })
+
+  test.each(["getaddrinfo ENOTFOUND proxy.example.com", "connect ETIMEDOUT", "fetch failed"])(
+    "does not classify %s as a transient DNS failure",
+    (message) => {
+      expect(SessionRetry.retryable(wrap(message), retryProvider)).toBeUndefined()
+    },
+  )
+
+  test("stops transient DNS retries after two attempts even without a configured budget", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const error = wrap("getaddrinfo ETIMEOUT proxy.example.com")
+        const step = yield* Schedule.toStepWithMetadata(
+          SessionRetry.policy({
+            provider: () => retryProvider,
+            parse: () => error,
+            set: () => Effect.void,
+          }),
+        )
+        expect(Duration.toMillis((yield* step(error)).duration)).toBe(2000)
+        expect(Duration.toMillis((yield* step(error)).duration)).toBe(4000)
+        expect(Exit.isFailure(yield* Effect.exit(step(error)))).toBe(true)
+      }),
+    )
+  }, 10_000)
+
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Too Many Requests" })

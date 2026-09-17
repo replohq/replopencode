@@ -240,6 +240,7 @@ const relayedOutageLLM = Layer.succeed(
             LLMEvent.reasoningDelta({ id: "reasoning-1", text: "thinking on the dead route" }),
             LLMEvent.textStart({ id: "text-1" }),
             LLMEvent.textDelta({ id: "text-1", text: "partial from the dead route" }),
+            LLMEvent.toolInputStart({ id: "call-dead", name: "lookup" }),
             LLMEvent.providerError({ message: JSON.stringify({ code: 503, message: "Provider returned error" }) }),
           )
         : Stream.make(
@@ -1282,7 +1283,7 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
 
         expect(value).toBe("continue")
-        expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
+        expect(parts.filter((part) => part.type === "reasoning" || part.type === "tool")).toEqual([])
         expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
       }),

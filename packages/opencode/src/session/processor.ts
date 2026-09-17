@@ -698,20 +698,25 @@ const layer = Layer.effect(
               Effect.provideService(Database.Service, database),
               Effect.orElseSucceed(() => []),
             )).filter((part) => !earlierParts.has(part.id))
-            // A tool that already ran is missing from the history the retry sends,
-            // so another model could run it again; surface the error instead.
-            if (written.some((part) => part.type === "tool")) return undefined
+            // A tool that started is missing from the history the retry sends, so
+            // another model could run it again; surface the error instead. A tool
+            // still pending only had its input streamed and never ran.
+            if (written.some((part) => part.type === "tool" && part.state.status !== "pending")) return undefined
             const resolved = yield* provider
               .getModel(ProviderV2.ID.make(target.providerID), ModelV2.ID.make(target.modelID))
               .pipe(Effect.option)
             if (Option.isNone(resolved)) return undefined
             ctx.model = resolved.value
             ctx.fallbacks += 1
-            // Partial reasoning and text the failed attempts wrote belong to the
-            // previous model; left on this message they would be replayed as the
-            // fallback model's own output.
+            // Partial output the failed attempts wrote belongs to the previous model;
+            // left on this message it would be replayed as the fallback's own.
             yield* Effect.forEach(
-              written.filter((part) => part.type === "reasoning" || part.type === "text"),
+              written.filter(
+                (part) =>
+                  part.type === "reasoning" ||
+                  part.type === "text" ||
+                  (part.type === "tool" && part.state.status === "pending"),
+              ),
               (part) =>
                 session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID: part.id }),
               { discard: true },

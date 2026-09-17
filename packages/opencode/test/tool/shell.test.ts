@@ -1017,7 +1017,7 @@ describe("tool.shell abort", () => {
           const ready = yield* Deferred.make<void>()
           const fiber = yield* run(
             {
-              command: `${bin} -e 'process.on("SIGTERM", () => {}); console.log("ready"); setTimeout(() => {}, 15000)'`,
+              command: `${bin} -e 'process.on("SIGTERM", () => {}); console.log("ready"); setTimeout(() => {}, 20000)'`,
             },
             {
               ...ctx,
@@ -1033,7 +1033,7 @@ describe("tool.shell abort", () => {
           expect(Exit.isFailure(exit)).toBe(true)
         }),
       ),
-    10_000,
+    15_000,
   )
 
   it.live(

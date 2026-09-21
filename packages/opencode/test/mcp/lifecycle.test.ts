@@ -14,7 +14,7 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Logger } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
@@ -490,6 +490,30 @@ it.instance("unavailable remote server is marked failed without tools", () =>
 
     expect((yield* mcp.status()).unavailable?.status).toBe("failed")
     expect(yield* mcp.tools()).toEqual({})
+  }),
+)
+
+it.instance("unavailable remote server surfaces the underlying error in the log", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() => Bun.serve({ port: 0, fetch: () => new Response("unavailable", { status: 503 }) })),
+      (http) => Effect.promise(() => http.stop(true)),
+    )
+    const mcp = yield* MCP.Service
+    const captured: Array<unknown> = []
+    const capture = Logger.make((options) => {
+      captured.push(options.message)
+    })
+
+    yield* mcp
+      .add("unlogged", remote(server.url.toString(), 500))
+      .pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: true })))
+
+    const logged = captured.find((item) => Array.isArray(item) && item[0] === "server unavailable")
+    expect(logged).toBeDefined()
+    if (!Array.isArray(logged)) return
+    const fields: unknown = logged[1]
+    expect(fields).toMatchObject({ status: "failed", error: expect.any(String) })
   }),
 )
 

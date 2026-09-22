@@ -987,32 +987,41 @@ it.instance(
   "config entry that only names a model keeps the catalog's context tiers",
   Effect.gen(function* () {
     yield* set("OPENROUTER_API_KEY", "test-api-key")
-    const model = (yield* list)[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    const model = (yield* list)[ProviderV2.ID.make("openrouter")].models["x-ai/grok-4.5"]
     expect(model.cost.tiers).toEqual([
-      { input: 5, output: 22.5, cache: { read: 0.5, write: 0 }, tier: { type: "context", size: 272_000 } },
+      { input: 4, output: 12, cache: { read: 1, write: 0 }, tier: { type: "context", size: 200_000 } },
     ])
-    // NOTE (Gabe, 2026-09-02): OpenRouter bills gpt-5.x at base until 272K, so the legacy over-200k field must not outrank the tier.
+    // NOTE (Gabe, 2026-09-02): the catalog keeps the legacy over-200k field next to the tier; the tier is what prices the step.
     expect(model.cost.experimentalOver200K).toBeUndefined()
-    expect(price(model, 250_000)).toBeCloseTo(0.625, 6)
-    expect(price(model, 300_000)).toBeCloseTo(1.5, 6)
+    expect(price(model, 150_000)).toBeCloseTo(0.3, 6)
+    expect(price(model, 300_000)).toBeCloseTo(1.2, 6)
   }),
-  { config: { provider: { openrouter: { models: { "openai/gpt-5.4": { options: {} } } } } } },
+  { config: { provider: { openrouter: { models: { "x-ai/grok-4.5": { options: {} } } } } } },
 )
 
 it.instance(
   "config over-200k cost becomes the 200K tier above the catalog's lower tiers",
   Effect.gen(function* () {
     yield* set("OPENROUTER_API_KEY", "test-api-key")
-    const models = (yield* list)[ProviderV2.ID.make("openrouter")].models
-    const over200K = { input: 7, output: 30, cache: { read: 0.7, write: 0 }, tier: { type: "context" as const, size: 200_000 } }
-    expect(models["openai/gpt-5.4"].cost.tiers).toEqual([over200K])
-    expect(models["x-ai/grok-4"].cost.tiers).toEqual([
-      { input: 6, output: 30, cache: { read: 0, write: 0 }, tier: { type: "context", size: 128_000 } },
+    yield* set("DEEPINFRA_API_KEY", "test-api-key")
+    const providers = yield* list
+    const flat = providers[ProviderV2.ID.make("openrouter")].models["openai/gpt-5.4"]
+    const tiered = providers[ProviderV2.ID.make("deepinfra")].models["Qwen/Qwen3-Max"]
+    const over200K = {
+      input: 7,
+      output: 30,
+      cache: { read: 0.7, write: 0 },
+      tier: { type: "context" as const, size: 200_000 },
+    }
+    expect(flat.cost.tiers).toEqual([over200K])
+    expect(tiered.cost.tiers).toEqual([
+      { input: 2.4, output: 12, cache: { read: 0.48, write: 0 }, tier: { type: "context", size: 32_000 } },
+      { input: 3, output: 15, cache: { read: 0.6, write: 0 }, tier: { type: "context", size: 128_000 } },
       over200K,
     ])
-    expect(models["x-ai/grok-4"].cost.experimentalOver200K).toBeUndefined()
-    expect(price(models["x-ai/grok-4"], 150_000)).toBeCloseTo(0.9, 6)
-    expect(price(models["x-ai/grok-4"], 300_000)).toBeCloseTo(2.1, 6)
+    expect(tiered.cost.experimentalOver200K).toBeUndefined()
+    expect(price(tiered, 150_000)).toBeCloseTo(0.45, 6)
+    expect(price(tiered, 300_000)).toBeCloseTo(2.1, 6)
   }),
   {
     config: {
@@ -1022,8 +1031,12 @@ it.instance(
             "openai/gpt-5.4": {
               cost: { input: 3.5, output: 15, context_over_200k: { input: 7, output: 30, cache_read: 0.7 } },
             },
-            "x-ai/grok-4": {
-              cost: { input: 3, output: 15, context_over_200k: { input: 7, output: 30, cache_read: 0.7 } },
+          },
+        },
+        deepinfra: {
+          models: {
+            "Qwen/Qwen3-Max": {
+              cost: { input: 1.2, output: 6, context_over_200k: { input: 7, output: 30, cache_read: 0.7 } },
             },
           },
         },

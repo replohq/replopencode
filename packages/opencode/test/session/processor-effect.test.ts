@@ -832,11 +832,11 @@ it.live("session.processor effect tests retry OpenAI-compatible midstream server
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry midstream server error" }],
           tools: {},
+          convert: unconverted,
         })
 
         const parts = yield* MessageV2.parts(msg.id)
@@ -889,11 +889,11 @@ it.live("session.processor effect tests retry network_error finish reasons", () 
             model: { providerID: ref.providerID, modelID: ref.modelID },
           } satisfies SessionV1.User,
           sessionID: chat.id,
-          model: mdl,
           agent: agent(),
           system: [],
           messages: [{ role: "user", content: "retry network error" }],
           tools: {},
+          convert: unconverted,
         })
 
         const parts = yield* MessageV2.parts(msg.id)

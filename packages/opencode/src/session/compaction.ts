@@ -426,39 +426,31 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
-      const prompt = { role: "user" as const, content: [{ type: "text" as const, text: nextPrompt }] }
+      const summaryRequest = [
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: [
+                nextPrompt,
+                ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            },
+          ],
+        },
+      ]
       const result = yield* processor.process({
         user: userMessage,
         agent,
         sessionID: input.sessionID,
         tools: {},
         system: [],
-<<<<<<< HEAD
-        messages: [...modelMessages, prompt],
-        convert: (target) =>
-          MessageV2.toModelMessagesEffect(msgs, target, {
-            stripMedia: true,
-            toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-          }).pipe(Effect.map((converted) => [...converted, prompt])),
-=======
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: [
-                  nextPrompt,
-                  ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
-              },
-            ],
-          },
-        ],
-        model,
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
+        messages: summaryRequest,
+        // Serialized text carries no model-specific parts, so a fallback model reuses it as is.
+        convert: () => Effect.succeed(summaryRequest),
       })
 
       if (result === "compact") {

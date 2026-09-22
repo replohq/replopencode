@@ -249,21 +249,13 @@ describe("Truncate", () => {
 
         yield* fs.makeDirectory(Truncate.DIR, { recursive: true })
 
-<<<<<<< HEAD
-        const old = path.join(Truncate.DIR, Identifier.create("tool", "ascending"))
-        const recent = path.join(Truncate.DIR, Identifier.create("tool", "ascending"))
-=======
         const old = path.join(Truncate.DIR, Identifier.create("tool", "ascending", 2 ** 36 - 1))
         const recent = path.join(Truncate.DIR, Identifier.create("tool", "ascending", 2 ** 36 + 1))
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
 
         yield* writeFileStringScoped(old, "old content")
         yield* writeFileStringScoped(recent, "recent content")
         yield* fs.utimes(old, new Date(), new Date(Date.now() - 10 * DAY_MS))
-<<<<<<< HEAD
-=======
         yield* fs.utimes(recent, new Date(), new Date(Date.now() - 3 * DAY_MS))
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
         yield* svc.cleanup()
 
         expect(yield* fs.exists(old)).toBe(false)

@@ -146,47 +146,23 @@ export function retryable(error: Err, provider: string) {
     return { message: error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message }
   }
 
-<<<<<<< HEAD
-  // Check for rate limit patterns in plain text error messages
-  const msg = isRecord(error.data) ? error.data.message : undefined
-  if (typeof msg === "string") {
-    const lower = msg.toLowerCase()
-    if (
-      lower.includes("rate increased too quickly") ||
-      lower.includes("rate limit") ||
-      lower.includes("too many requests")
-    ) {
-      return { message: msg }
-    }
-  }
-
-  const json = parseJSON(msg)
-  if (!json || typeof json !== "object") return undefined
-  // OpenRouter reports upstream failures inside a 200 stream as {code: <http status>, ...},
-  // so the status never reaches the APIError branch above. Same rule as there: 429 and 5xx retry,
-  // except an overflow relayed with a 502 code, which must reach compaction instead of the retry loop.
-  if (ProviderError.parseStreamError(json)?.type === "context_overflow") return undefined
-  if (json.code === 429) return { message: "Rate Limited" }
-  if (typeof json.code === "number" && json.code >= 500) return { message: "Provider is overloaded" }
-  const code = typeof json.code === "string" ? json.code : ""
-
-  if (json.type === "error" && json.error?.type === "too_many_requests") {
-    return { message: "Too Many Requests" }
-  }
-  if (code.includes("exhausted") || code.includes("unavailable")) {
-    return { message: "Provider is overloaded" }
-  }
-  if (json.type === "error" && typeof json.error?.code === "string" && json.error.code.includes("rate_limit")) {
-    return { message: "Rate Limited" }
-  }
-=======
   const message = isRecord(error.data) ? error.data.message : undefined
   if (typeof message !== "string") return undefined
+  const json = parseJSON(message)
+  if (json && typeof json === "object") {
+    // OpenRouter reports upstream failures inside a 200 stream as {code: <http status>, ...}, so the
+    // status never reaches the APIError branch above and the text patterns below would see "502" in an
+    // overflow chunk. Same rule as there: 429 and 5xx retry, 4xx and overflows do not.
+    if (ProviderError.parseStreamError(json)?.type === "context_overflow") return undefined
+    if (typeof json.code === "number") {
+      if (json.code === 429) return { message: "Rate Limited" }
+      return json.code >= 500 ? { message: "Provider is overloaded" } : undefined
+    }
+  }
   const lower = message.toLowerCase()
   if (lower.includes("too_many_requests")) return { message: "Too Many Requests" }
   if (lower.includes("exhausted") || lower.includes("unavailable")) return { message: "Provider is overloaded" }
   if (matchesRetryableMessage(message)) return { message }
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   return undefined
 }
 
@@ -221,7 +197,7 @@ export function policy(opts: {
   provider: () => string
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
-  // Same-route retries before the fallback hook is asked. 0 disables them; omit for today's unbounded behaviour.
+  // Same-route retries before the fallback hook is asked. 0 disables them; omit for RETRY_MAX_RETRIES.
   retries?: number
   // Asked once retries are exhausted or the error is not retryable. Returning a
   // message means the caller swapped models and the schedule should continue at once.
@@ -231,11 +207,10 @@ export function policy(opts: {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
-<<<<<<< HEAD
       const retry = retryable(error, opts.provider())
       // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
       const sinceSwap = meta.attempt - swapAt
-      const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
+      const exhausted = sinceSwap > (opts.retries ?? RETRY_MAX_RETRIES)
       if (retry && !exhausted) {
         return Effect.gen(function* () {
           const wait = delay(sinceSwap, SessionV1.APIError.isInstance(error) ? error : undefined)
@@ -247,19 +222,6 @@ export function policy(opts: {
             next: now + wait,
           })
           return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
-=======
-      const retry = retryable(error, opts.provider)
-      if (!retry) return Cause.done(meta.attempt)
-      if (meta.attempt > RETRY_MAX_RETRIES) return Cause.done(meta.attempt)
-      return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
-        const now = yield* Clock.currentTimeMillis
-        yield* opts.set({
-          attempt: meta.attempt,
-          message: retry.message,
-          action: retry.action,
-          next: now + wait,
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
         })
       }
       const fallback = opts.fallback

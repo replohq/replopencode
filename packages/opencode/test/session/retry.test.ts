@@ -124,7 +124,6 @@ describe("session.retry.delay", () => {
     }),
   )
 
-<<<<<<< HEAD
   it.instance("policy hands off to fallback once same-provider attempts are spent", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.make("session-fallback-test")
@@ -164,14 +163,16 @@ describe("session.retry.delay", () => {
       const exit = yield* Effect.exit(step(error))
       expect(Exit.isFailure(exit)).toBe(true)
       expect(asked).toBe(2)
-=======
+    }),
+  )
+
   it.instance("policy stops after five retries", () =>
     Effect.gen(function* () {
       const attempts: number[] = []
       const error = apiError({ "retry-after-ms": "0" })
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
-          provider: "test",
+          provider: () => "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
           set: (info) =>
             Effect.sync(() => {
@@ -185,7 +186,6 @@ describe("session.retry.delay", () => {
       )
 
       expect(attempts).toStrictEqual([1, 2, 3, 4, 5])
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
     }),
   )
 })

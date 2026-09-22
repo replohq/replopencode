@@ -51,10 +51,6 @@ const layer = Layer.effect(
     const fs = yield* FSUtil.Service
 
     const cleanup = Effect.fn("Truncate.cleanup")(function* () {
-<<<<<<< HEAD
-      // File mtime, not the id timestamp: the 48-bit id encoding wraps every ~795 days, corrupting decoded times.
-=======
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
       const cutoff = Date.now() - Duration.toMillis(RETENTION)
       const entries = yield* fs.readDirectory(TRUNCATION_DIR).pipe(
         Effect.map((all) => all.filter((name) => name.startsWith("tool_"))),
@@ -63,13 +59,8 @@ const layer = Layer.effect(
       for (const entry of entries) {
         const file = path.join(TRUNCATION_DIR, entry)
         const info = yield* fs.stat(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
-<<<<<<< HEAD
-        const mtime = info === undefined ? undefined : Option.getOrUndefined(info.mtime)
-        if (mtime === undefined || mtime.getTime() >= cutoff) continue
-=======
         const mtime = info && Option.getOrUndefined(info.mtime)
         if (!mtime || mtime.getTime() >= cutoff) continue
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
         yield* fs.remove(file).pipe(Effect.catch(() => Effect.void))
       }
     })

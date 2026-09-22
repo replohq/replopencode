@@ -1249,10 +1249,6 @@ export function options(input: {
 
   if (input.model.api.npm === "@ai-sdk/azure") {
     result["store"] = false
-<<<<<<< HEAD
-    result["promptCacheKey"] = cacheKey
-=======
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   }
 
   if (input.model.api.npm === "@openrouter/ai-sdk-provider" || input.model.api.npm === "@llmgateway/ai-sdk-provider") {
@@ -1281,14 +1277,9 @@ export function options(input: {
     }
   }
 
-<<<<<<< HEAD
-  if (input.model.providerID === "openai" || input.providerOptions?.setCacheKey) {
-    result["promptCacheKey"] = cacheKey
-=======
   if (input.model.providerID === "meta" && input.model.api.npm === "@ai-sdk/openai") {
     result["reasoningSummary"] = "auto"
     result["include"] = INCLUDE_ENCRYPTED_REASONING
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   }
 
   if (input.model.api.npm === "@ai-sdk/google" || input.model.api.npm === "@ai-sdk/google-vertex") {
@@ -1335,8 +1326,13 @@ export function options(input: {
   }
 
   if (input.providerOptions?.setCacheKey !== false) {
-    if (input.model.api.npm === "@ai-sdk/deepinfra" || input.model.api.npm === "@ai-sdk/cerebras") {
-      result["prompt_cache_key"] = input.sessionID
+    // OpenRouter documents prompt_cache_key as its sticky routing key, so it stays on the wire here.
+    if (
+      input.model.api.npm === "@ai-sdk/deepinfra" ||
+      input.model.api.npm === "@ai-sdk/cerebras" ||
+      input.model.providerID === "openrouter"
+    ) {
+      result["prompt_cache_key"] = cacheKey
     } else if (
       input.model.api.npm === "@ai-sdk/openai" ||
       input.model.api.npm === "@ai-sdk/azure" ||
@@ -1345,7 +1341,7 @@ export function options(input: {
       input.model.api.npm === "venice-ai-sdk-provider" ||
       input.providerOptions?.setCacheKey === true
     ) {
-      result["promptCacheKey"] = input.sessionID
+      result["promptCacheKey"] = cacheKey
     }
   }
 
@@ -1391,34 +1387,13 @@ export function options(input: {
       result["textVerbosity"] = "low"
     }
 
-<<<<<<< HEAD
-    if (input.model.providerID.startsWith("opencode")) {
-      result["promptCacheKey"] = cacheKey
-=======
     if (input.model.providerID.startsWith("opencode") && input.providerOptions?.setCacheKey !== false) {
-      result["promptCacheKey"] = input.sessionID
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
+      result["promptCacheKey"] = cacheKey
       result["include"] = INCLUDE_ENCRYPTED_REASONING
       result["reasoningSummary"] = "auto"
     }
   }
 
-<<<<<<< HEAD
-  if (input.model.providerID === "venice") {
-    result["promptCacheKey"] = cacheKey
-  }
-
-  if (input.model.providerID === "openrouter") {
-    result["prompt_cache_key"] = cacheKey
-  }
-  if (input.model.api.npm === "@ai-sdk/gateway") {
-    result["gateway"] = {
-      caching: "auto",
-    }
-  }
-
-=======
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   return result
 }
 

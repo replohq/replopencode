@@ -884,21 +884,13 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
-<<<<<<< HEAD
 it.instance("turn.done logs prep_ms from the first request even when ttft captures from a later step", () =>
-=======
-it.instance("loop continues when finish is unknown", () =>
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const session = yield* sessions.create({
-<<<<<<< HEAD
       title: "Turn timing",
-=======
-      title: "Pinned",
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
       permission: [{ permission: "*", pattern: "*", action: "allow" }],
     })
     yield* prompt.prompt({
@@ -907,7 +899,6 @@ it.instance("loop continues when finish is unknown", () =>
       noReply: true,
       parts: [{ type: "text", text: "hello" }],
     })
-<<<<<<< HEAD
     yield* llm.tool("first", { value: "first" })
     yield* llm.text("second")
 
@@ -935,7 +926,25 @@ it.instance("loop continues when finish is unknown", () =>
     for (const phase of ["history_ms", "tools_ms", "context_ms", "snapshot_ms"] as const) {
       expect(typeof fields[phase]).toBe("number")
       expect(fields[phase]!).toBeGreaterThanOrEqual(0)
-=======
+    }
+  }),
+)
+
+it.instance("loop continues when finish is unknown", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
     yield* llm.push(reply())
     yield* llm.text("second")
 
@@ -945,7 +954,6 @@ it.instance("loop continues when finish is unknown", () =>
     if (result.info.role === "assistant") {
       expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
       expect(result.info.finish).toBe("stop")
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
     }
   }),
 )

@@ -91,7 +91,6 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBe(sessionID)
   })
 
-<<<<<<< HEAD
   test("should prefer configured promptCacheKey over the session default for openai", () => {
     const openaiModel = {
       ...mockModel,
@@ -124,7 +123,10 @@ describe("ProviderTransform.options - setCacheKey", () => {
       model: openaiModel,
       sessionID,
       providerOptions: { promptCacheKey: "" },
-=======
+    })
+    expect(result.promptCacheKey).toBe(sessionID)
+  })
+
   test("should set promptCacheKey for the OpenAI SDK regardless of provider ID", () => {
     const result = ProviderTransform.options({
       model: {
@@ -134,12 +136,10 @@ describe("ProviderTransform.options - setCacheKey", () => {
       },
       sessionID,
       providerOptions: {},
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
     })
     expect(result.promptCacheKey).toBe(sessionID)
   })
 
-<<<<<<< HEAD
   test("should use configured promptCacheKey for openrouter prompt_cache_key", () => {
     const openrouterModel = {
       ...mockModel,
@@ -156,7 +156,8 @@ describe("ProviderTransform.options - setCacheKey", () => {
       providerOptions: { promptCacheKey: "user-42" },
     })
     expect(result.prompt_cache_key).toBe("user-42")
-=======
+  })
+
   test("should not set promptCacheKey for the OpenAI-compatible SDK by provider name", () => {
     const result = ProviderTransform.options({
       model: {
@@ -218,7 +219,6 @@ describe("ProviderTransform.options - setCacheKey", () => {
       providerOptions: { setCacheKey: false },
     })
     expect(result.promptCacheKey).toBeUndefined()
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   })
 
   test("should set store=false for openai provider", () => {
@@ -345,7 +345,7 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBe(sessionID)
   })
 
-  test("should not send an undocumented OpenRouter prompt_cache_key", () => {
+  test("should send the session default as OpenRouter's prompt_cache_key sticky routing key", () => {
     const result = ProviderTransform.options({
       model: {
         ...mockModel,
@@ -355,7 +355,7 @@ describe("ProviderTransform.options - setCacheKey", () => {
       sessionID,
       providerOptions: {},
     })
-    expect(result.prompt_cache_key).toBeUndefined()
+    expect(result.prompt_cache_key).toBe(sessionID)
   })
 })
 
@@ -6187,7 +6187,6 @@ describe("ProviderTransform.providerOptions - ai-gateway-provider", () => {
   })
 })
 
-<<<<<<< HEAD
 describe("ProviderTransform.message empty text parts", () => {
   const openrouterClaude = {
     id: "anthropic/claude-sonnet-5",
@@ -6313,7 +6312,9 @@ describe("ProviderTransform.message empty text parts", () => {
     const assistant = body.messages.find((msg: any) => msg.role === "assistant")
     expect(assistant.reasoning_details).toEqual([detail])
     expect(assistant.content).toBe("Answer")
-=======
+  })
+})
+
 describe("ProviderTransform.providerOptions - merge-gateway-ai-sdk-provider", () => {
   const model = {
     id: "merge-gateway/openai/gpt-5.6-sol",
@@ -6422,6 +6423,5 @@ describe("ProviderTransform.options - kimi family adaptive thinking", () => {
     }
     const result = ProviderTransform.options({ model, sessionID: "s1", providerOptions: {} })
     expect(result.thinking).toBeUndefined()
->>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   })
 })

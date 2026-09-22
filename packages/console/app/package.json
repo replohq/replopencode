@@ -1,6 +1,10 @@
 {
   "name": "@opencode-ai/console-app",
+<<<<<<< HEAD
   "version": "1.17.14",
+=======
+  "version": "1.18.32",
+>>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   "type": "module",
   "license": "MIT",
   "scripts": {
@@ -29,6 +33,7 @@
     "@upstash/redis": "1.38.0",
     "chart.js": "4.5.1",
     "nitro": "3.0.1-alpha.1",
+    "number-flow": "0.6.2",
     "solid-js": "catalog:",
     "solid-list": "0.3.0",
     "solid-stripe": "0.8.1",

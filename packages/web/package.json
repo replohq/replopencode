@@ -2,7 +2,11 @@
   "name": "@opencode-ai/web",
   "type": "module",
   "license": "MIT",
+<<<<<<< HEAD
   "version": "1.17.14",
+=======
+  "version": "1.18.32",
+>>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   "scripts": {
     "dev": "astro dev",
     "dev:remote": "VITE_API_URL=https://api.opencode.ai astro dev",

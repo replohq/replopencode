@@ -26,14 +26,26 @@ export type Retryable = {
 
 export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
+export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+export const RETRY_MAX_RETRIES = 5
+
+const RETRYABLE_MESSAGE_PATTERNS = [
+  /429|500|502|503|504|524/i,
+  /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
+  /overloaded|service unavailable|service_unavailable|service-unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
+  /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
+  /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
+  /try your request again|retry your request|resource exhausted|resource_exhausted/i,
+  /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
+]
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
 
-export function delay(attempt: number, error?: SessionV1.APIError) {
+export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {
   if (error) {
     const headers = error.data.responseHeaders
     if (headers) {
@@ -59,11 +71,16 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
         }
       }
 
-      return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
+      return cap(exponential(attempt, random))
     }
   }
 
-  return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
+  return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
+}
+
+function exponential(attempt: number, random: number) {
+  const base = RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
+  return Math.ceil(base + base * RETRY_JITTER_FACTOR * random)
 }
 
 export function retryable(error: Err, provider: string) {
@@ -73,7 +90,13 @@ export function retryable(error: Err, provider: string) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
-    if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
+    if (
+      !error.data.isRetryable &&
+      !(status !== undefined && status >= 500) &&
+      !matchesRetryableMessage(error.data.message) &&
+      !matchesRetryableMessage(error.data.responseBody)
+    )
+      return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
       return {
         message: GO_UPSELL_MESSAGE,
@@ -81,7 +104,7 @@ export function retryable(error: Err, provider: string) {
           reason: "free_tier_limit",
           provider,
           title: "Free limit reached",
-          message: "Subscribe to OpenCode Go for reliable access to the best open-source models, starting at $5/month.",
+          message: "Subscribe to OpenCode Go for reliable access to the best open-source models for $10/month.",
           label: "subscribe",
           link: GO_UPSELL_URL,
         },
@@ -123,6 +146,7 @@ export function retryable(error: Err, provider: string) {
     return { message: error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message }
   }
 
+<<<<<<< HEAD
   // Check for rate limit patterns in plain text error messages
   const msg = isRecord(error.data) ? error.data.message : undefined
   if (typeof msg === "string") {
@@ -155,7 +179,19 @@ export function retryable(error: Err, provider: string) {
   if (json.type === "error" && typeof json.error?.code === "string" && json.error.code.includes("rate_limit")) {
     return { message: "Rate Limited" }
   }
+=======
+  const message = isRecord(error.data) ? error.data.message : undefined
+  if (typeof message !== "string") return undefined
+  const lower = message.toLowerCase()
+  if (lower.includes("too_many_requests")) return { message: "Too Many Requests" }
+  if (lower.includes("exhausted") || lower.includes("unavailable")) return { message: "Provider is overloaded" }
+  if (matchesRetryableMessage(message)) return { message }
+>>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
   return undefined
+}
+
+function matchesRetryableMessage(value: unknown) {
+  return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value))
 }
 
 function str(value: unknown) {
@@ -195,6 +231,7 @@ export function policy(opts: {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
+<<<<<<< HEAD
       const retry = retryable(error, opts.provider())
       // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
       const sinceSwap = meta.attempt - swapAt
@@ -210,6 +247,19 @@ export function policy(opts: {
             next: now + wait,
           })
           return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
+=======
+      const retry = retryable(error, opts.provider)
+      if (!retry) return Cause.done(meta.attempt)
+      if (meta.attempt > RETRY_MAX_RETRIES) return Cause.done(meta.attempt)
+      return Effect.gen(function* () {
+        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+        const now = yield* Clock.currentTimeMillis
+        yield* opts.set({
+          attempt: meta.attempt,
+          message: retry.message,
+          action: retry.action,
+          next: now + wait,
+>>>>>>> 545f51d26cc39a907d2867492d498d9607ea5fa4
         })
       }
       const fallback = opts.fallback

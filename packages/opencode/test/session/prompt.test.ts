@@ -39,6 +39,7 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
+import { SessionRecovery } from "../../src/session/recover"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
@@ -206,6 +207,7 @@ const promptRoot = LayerNode.group([
   Image.node,
   SessionCompaction.node,
   SessionRevert.node,
+  SessionRecovery.node,
   Instruction.node,
   SystemPrompt.node,
   CrossSpawnSpawner.node,
@@ -460,6 +462,46 @@ noLLMServer.instance(
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
       if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "loop exits for a completed parent turn with nonmonotonic message IDs",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const userID = MessageID.make("msg_z_user")
+      const assistantID = MessageID.make("msg_a_assistant")
+      yield* sessions.updateMessage({
+        id: userID,
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: 100 },
+      })
+      yield* sessions.updateMessage({
+        id: assistantID,
+        role: "assistant",
+        parentID: userID,
+        sessionID: chat.id,
+        mode: "build",
+        agent: "build",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: 200, completed: 201 },
+        finish: "stop",
+      })
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+
+      expect(result.info.id).toBe(assistantID)
     }),
   { config: cfg },
 )
@@ -886,6 +928,34 @@ it.instance("turn.done logs prep_ms from the first request even when ttft captur
     for (const phase of ["history_ms", "tools_ms", "context_ms", "snapshot_ms"] as const) {
       expect(typeof fields[phase]).toBe("number")
       expect(fields[phase]!).toBeGreaterThanOrEqual(0)
+    }
+  }),
+)
+
+it.instance("loop continues when finish is unknown", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.push(reply())
+    yield* llm.text("second")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(2)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
+      expect(result.info.finish).toBe("stop")
     }
   }),
 )
@@ -2536,6 +2606,36 @@ it.instance("orphaned reply heals the dangling question part and re-enters the l
     expect(part?.state.title).toBe("Asked 1 question")
     expect(part?.state.metadata).toEqual({ answers: [["Yes"]] })
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("orphaned reply after a restart puts the answered question back in front of the model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const recovery = yield* SessionRecovery.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* recovery.init()
+    yield* llm.text("resumed")
+
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+
+    const message = yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id)
+    const info = Option.getOrThrow(message).info
+    expect(info.role).toBe("assistant")
+    if (info.role !== "assistant") return
+    expect(info.error).toBeUndefined()
+    expect(info.finish).toBe("tool-calls")
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(1)
+    const messages = hits[0].body.messages as Array<{ role: string; content: unknown }>
+    expect(messages.filter((item) => item.role === "tool").map((item) => item.content)).toEqual([
+      formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }),
+    ])
   }),
 )
 

@@ -26,14 +26,26 @@ export type Retryable = {
 
 export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
+export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+export const RETRY_MAX_RETRIES = 5
+
+const RETRYABLE_MESSAGE_PATTERNS = [
+  /429|500|502|503|504|524/i,
+  /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
+  /overloaded|service unavailable|service_unavailable|service-unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
+  /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
+  /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
+  /try your request again|retry your request|resource exhausted|resource_exhausted/i,
+  /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
+]
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
 
-export function delay(attempt: number, error?: SessionV1.APIError) {
+export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {
   if (error) {
     const headers = error.data.responseHeaders
     if (headers) {
@@ -59,11 +71,16 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
         }
       }
 
-      return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
+      return cap(exponential(attempt, random))
     }
   }
 
-  return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
+  return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
+}
+
+function exponential(attempt: number, random: number) {
+  const base = RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1)
+  return Math.ceil(base + base * RETRY_JITTER_FACTOR * random)
 }
 
 export function retryable(error: Err, provider: string) {
@@ -73,7 +90,13 @@ export function retryable(error: Err, provider: string) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.
-    if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
+    if (
+      !error.data.isRetryable &&
+      !(status !== undefined && status >= 500) &&
+      !matchesRetryableMessage(error.data.message) &&
+      !matchesRetryableMessage(error.data.responseBody)
+    )
+      return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
       return {
         message: GO_UPSELL_MESSAGE,
@@ -81,7 +104,7 @@ export function retryable(error: Err, provider: string) {
           reason: "free_tier_limit",
           provider,
           title: "Free limit reached",
-          message: "Subscribe to OpenCode Go for reliable access to the best open-source models, starting at $5/month.",
+          message: "Subscribe to OpenCode Go for reliable access to the best open-source models for $10/month.",
           label: "subscribe",
           link: GO_UPSELL_URL,
         },
@@ -123,39 +146,28 @@ export function retryable(error: Err, provider: string) {
     return { message: error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message }
   }
 
-  // Check for rate limit patterns in plain text error messages
-  const msg = isRecord(error.data) ? error.data.message : undefined
-  if (typeof msg === "string") {
-    const lower = msg.toLowerCase()
-    if (
-      lower.includes("rate increased too quickly") ||
-      lower.includes("rate limit") ||
-      lower.includes("too many requests")
-    ) {
-      return { message: msg }
+  const message = isRecord(error.data) ? error.data.message : undefined
+  if (typeof message !== "string") return undefined
+  const json = parseJSON(message)
+  if (json && typeof json === "object") {
+    // OpenRouter reports upstream failures inside a 200 stream as {code: <http status>, ...}, so the
+    // status never reaches the APIError branch above and the text patterns below would see "502" in an
+    // overflow chunk. Same rule as there: 429 and 5xx retry, 4xx and overflows do not.
+    if (ProviderError.parseStreamError(json)?.type === "context_overflow") return undefined
+    if (typeof json.code === "number") {
+      if (json.code === 429) return { message: "Rate Limited" }
+      return json.code >= 500 ? { message: "Provider is overloaded" } : undefined
     }
   }
-
-  const json = parseJSON(msg)
-  if (!json || typeof json !== "object") return undefined
-  // OpenRouter reports upstream failures inside a 200 stream as {code: <http status>, ...},
-  // so the status never reaches the APIError branch above. Same rule as there: 429 and 5xx retry,
-  // except an overflow relayed with a 502 code, which must reach compaction instead of the retry loop.
-  if (ProviderError.parseStreamError(json)?.type === "context_overflow") return undefined
-  if (json.code === 429) return { message: "Rate Limited" }
-  if (typeof json.code === "number" && json.code >= 500) return { message: "Provider is overloaded" }
-  const code = typeof json.code === "string" ? json.code : ""
-
-  if (json.type === "error" && json.error?.type === "too_many_requests") {
-    return { message: "Too Many Requests" }
-  }
-  if (code.includes("exhausted") || code.includes("unavailable")) {
-    return { message: "Provider is overloaded" }
-  }
-  if (json.type === "error" && typeof json.error?.code === "string" && json.error.code.includes("rate_limit")) {
-    return { message: "Rate Limited" }
-  }
+  const lower = message.toLowerCase()
+  if (lower.includes("too_many_requests")) return { message: "Too Many Requests" }
+  if (lower.includes("exhausted") || lower.includes("unavailable")) return { message: "Provider is overloaded" }
+  if (matchesRetryableMessage(message)) return { message }
   return undefined
+}
+
+function matchesRetryableMessage(value: unknown) {
+  return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value))
 }
 
 function str(value: unknown) {
@@ -185,7 +197,7 @@ export function policy(opts: {
   provider: () => string
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
-  // Same-route retries before the fallback hook is asked. 0 disables them; omit for today's unbounded behaviour.
+  // Same-route retries before the fallback hook is asked. 0 disables them; omit for RETRY_MAX_RETRIES.
   retries?: number
   // Asked once retries are exhausted or the error is not retryable. Returning a
   // message means the caller swapped models and the schedule should continue at once.
@@ -198,7 +210,7 @@ export function policy(opts: {
       const retry = retryable(error, opts.provider())
       // Backoff and the retry budget restart on every swap; the status keeps counting across swaps.
       const sinceSwap = meta.attempt - swapAt
-      const exhausted = opts.retries !== undefined && sinceSwap > opts.retries
+      const exhausted = sinceSwap > (opts.retries ?? RETRY_MAX_RETRIES)
       if (retry && !exhausted) {
         return Effect.gen(function* () {
           const wait = delay(sinceSwap, SessionV1.APIError.isInstance(error) ? error : undefined)

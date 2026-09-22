@@ -47,3 +47,16 @@ export const isSandboxValue = (
   value instanceof SandboxSet ||
   value instanceof SandboxURL ||
   value instanceof SandboxURLSearchParams
+
+const ErrorBrand: unique symbol = Symbol("codemode.error")
+
+export const createErrorValue = (name: string, message: string): Record<string, unknown> => {
+  const value = Object.assign(Object.create(null) as Record<string, unknown>, { name, message })
+  Object.defineProperty(value, ErrorBrand, { value: name })
+  return value
+}
+
+export const errorBrandName = (value: unknown): string | undefined =>
+  value !== null && typeof value === "object"
+    ? ((value as Record<PropertyKey, unknown>)[ErrorBrand] as string | undefined)
+    : undefined

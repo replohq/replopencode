@@ -62,7 +62,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      // Lets code mode tell the model that a name it tried inside a script is one of these instead.
+      toolIDs: Object.keys(tools),
+    },
     agent: input.agent.name,
     messages: input.messages,
     metadata: (val) =>

@@ -10,6 +10,7 @@ import {
 } from "./tool-schema.js"
 import { isDefinition as isToolDefinition, type Definition } from "./tool.js"
 import {
+  errorBrandName,
   SandboxDate,
   SandboxMap,
   SandboxPromise,
@@ -71,6 +72,8 @@ export type ToolCallEnded = {
 export type ToolCallHooks<R = never> = {
   readonly onToolCallStart?: ((call: ToolCallStarted) => Effect.Effect<void, never, R>) | undefined
   readonly onToolCallEnd?: ((call: ToolCallEnded) => Effect.Effect<void, never, R>) | undefined
+  /** Explains an unknown tool path the host recognizes from outside Code Mode; replaces the default suggestions. */
+  readonly unknownToolHint?: ((path: ReadonlyArray<string>) => string | undefined) | undefined
 }
 
 /** Model-visible description of one schema-backed tool. */
@@ -211,14 +214,15 @@ const copyBounded = (
   if (preserveSandboxValues) {
     // Intra-sandbox checkpoints keep sandbox value instances alive as leaves; their contents
     // are never walked here (Map/Set members are validated where mutation happens, and the
-    // real boundary still serializes them below).
+    // real boundary still serializes them below). A caught error keeps its brand the same way.
     if (
       value instanceof SandboxDate ||
       value instanceof SandboxRegExp ||
       value instanceof SandboxMap ||
       value instanceof SandboxSet ||
       value instanceof SandboxURL ||
-      value instanceof SandboxURLSearchParams
+      value instanceof SandboxURLSearchParams ||
+      errorBrandName(value) !== undefined
     ) {
       return value
     }
@@ -383,6 +387,33 @@ const termForms = (term: string): Array<string> => {
   return forms
 }
 
+// Field-weighted score summed across terms: exact path or segment 20, path substring 8, description 4,
+// any searchable text (input names and descriptions) 2. Entries matching no term are dropped unless the query is empty.
+const rankTools = (entries: ReadonlyArray<SearchEntry>, query: string): ReadonlyArray<SearchEntry> => {
+  const terms = tokenize(query).map(termForms)
+  return entries
+    .map((entry) => {
+      const path = entry.description.path.toLowerCase()
+      const description = entry.description.description.toLowerCase()
+      const score = terms.reduce(
+        (total, forms) =>
+          total +
+          (forms.some((form) => path === form || path.endsWith(`.${form}`)) ? 20 : 0) +
+          (forms.some((form) => path.includes(form)) ? 8 : 0) +
+          (forms.some((form) => description.includes(form)) ? 4 : 0) +
+          (forms.some((form) => entry.searchText.includes(form)) ? 2 : 0),
+        0,
+      )
+      return { entry, score }
+    })
+    .filter(({ score }) => terms.length === 0 || score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.entry.description.path.localeCompare(right.entry.description.path),
+    )
+    .map(({ entry }) => entry)
+}
+
 const makeSearchTool = (searchIndex: ReadonlyArray<SearchEntry>): Definition => ({
   _tag: "CodeModeTool",
   description: "Search available Code Mode tools",
@@ -407,34 +438,7 @@ const makeSearchTool = (searchIndex: ReadonlyArray<SearchEntry>): Definition => 
           : scoped.find(
               (entry) => entry.description.path === pathQuery || toolExpression(entry.description.path) === trimmed,
             )
-      const terms = tokenize(query).map(termForms)
-      // Additive field-weighted scoring, summed across terms: exact path or path segment
-      // (20) > path substring (8) > description substring (4) > any searchable text,
-      // including input parameter names and descriptions (2).
-      const ranked =
-        exact !== undefined
-          ? [exact]
-          : scoped
-              .map((entry) => {
-                const path = entry.description.path.toLowerCase()
-                const description = entry.description.description.toLowerCase()
-                const score = terms.reduce(
-                  (total, forms) =>
-                    total +
-                    (forms.some((form) => path === form || path.endsWith(`.${form}`)) ? 20 : 0) +
-                    (forms.some((form) => path.includes(form)) ? 8 : 0) +
-                    (forms.some((form) => description.includes(form)) ? 4 : 0) +
-                    (forms.some((form) => entry.searchText.includes(form)) ? 2 : 0),
-                  0,
-                )
-                return { entry, score }
-              })
-              .filter(({ score }) => terms.length === 0 || score > 0)
-              .sort(
-                (left, right) =>
-                  right.score - left.score || left.entry.description.path.localeCompare(right.entry.description.path),
-              )
-              .map(({ entry }) => entry)
+      const ranked = exact !== undefined ? [exact] : rankTools(scoped, query)
       const items = ranked.slice(offset, offset + (request.limit ?? defaultSearchLimit)).map(({ description }) => ({
         ...description,
         path: toolExpression(description.path),
@@ -673,7 +677,11 @@ const namespaceKeys = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): Rea
   return Object.keys(value)
 }
 
-const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<R> | Definition<R> => {
+const resolve = <R>(
+  tools: HostTools<R>,
+  path: ReadonlyArray<string>,
+  explain: (path: ReadonlyArray<string>) => ReadonlyArray<string>,
+): HostTool<R> | Definition<R> => {
   let value: HostTool<R> | Definition<R> | HostTools<R> = tools
 
   for (const segment of path) {
@@ -683,9 +691,7 @@ const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<
       isDefinition(value) ||
       !Object.hasOwn(value, segment)
     ) {
-      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, [
-        "Use tools.$codemode.search({ query }) to find available described tools.",
-      ])
+      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, explain(path))
     }
     value = value[segment] as HostTool<R> | Definition<R> | HostTools<R>
   }
@@ -745,6 +751,24 @@ export const make = <R>(
       catch: () => new ToolRuntimeError("InvalidToolOutput", `Invalid output from tool '${name}'.`),
     })
 
+  // A wrong name otherwise costs the model a search and a retry. The host speaks first: it may
+  // know the name as one of its own tools, which no search inside Code Mode would find.
+  const explainUnknownTool = (path: ReadonlyArray<string>): ReadonlyArray<string> => {
+    const hostHint = hooks?.unknownToolHint?.(path)
+    if (hostHint !== undefined) return [hostHint]
+    const [namespace = ""] = path
+    const name = path.at(-1) ?? ""
+    const inNamespace = searchIndex.filter((entry) => entry.namespace === namespace)
+    // Models often repeat the namespace in the name (`bedrock.bedrock_send`).
+    const query = name.startsWith(`${namespace}_`) ? name.slice(namespace.length + 1) : name
+    const [closest, ...others] = rankTools(inNamespace.length > 0 ? inNamespace : searchIndex, query).slice(0, 3)
+    if (closest === undefined) return ["Use tools.$codemode.search({ query }) to find available described tools."]
+    const hints = [`Did you mean: ${closest.description.signature}`]
+    if (others.length > 0)
+      hints.push(`Other close matches: ${others.map((entry) => toolExpression(entry.description.path)).join(", ")}`)
+    return hints
+  }
+
   const recordCall = (call: ToolCall): void => {
     if (maxToolCalls !== undefined && calls.length >= maxToolCalls) {
       throw new ToolRuntimeError("ToolCallLimitExceeded", `Execution exceeded its tool-call limit of ${maxToolCalls}.`)
@@ -766,13 +790,14 @@ export const make = <R>(
             recordCall(call)
             return calls.length - 1
           }).pipe(Effect.tap((index) => hooks?.onToolCallStart?.({ index, name, input }) ?? Effect.void))
-        const tool = resolve(callableTools, path)
+        const tool = resolve(callableTools, path, explainUnknownTool)
         let describedInput: unknown
         if (isDefinition(tool)) {
-          if (externalArgs.length !== 1)
+          if (externalArgs.length > 1)
             throw new ToolRuntimeError("InvalidToolInput", `Tool '${name}' expects exactly one input object.`)
           describedInput = yield* Effect.try({
-            try: () => decodeToolInput(tool, externalArgs[0]),
+            // A call with no arguments means "no options"; the tool's own schema still rejects a missing required field.
+            try: () => decodeToolInput(tool, externalArgs[0] ?? {}),
             catch: (cause) =>
               new ToolRuntimeError("InvalidToolInput", `Invalid input for tool '${name}': ${String(cause)}`),
           })

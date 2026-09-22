@@ -652,6 +652,7 @@ export const Error = define({
   type: "session.error",
   schema: {
     sessionID: Schema.optional(SessionID),
+    messageID: Schema.optional(MessageID),
     error: Assistant.fields.error,
   },
 })

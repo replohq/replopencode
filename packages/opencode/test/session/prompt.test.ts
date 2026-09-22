@@ -39,6 +39,7 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
+import { SessionRecovery } from "../../src/session/recover"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
@@ -206,6 +207,7 @@ const promptRoot = LayerNode.group([
   Image.node,
   SessionCompaction.node,
   SessionRevert.node,
+  SessionRecovery.node,
   Instruction.node,
   SystemPrompt.node,
   CrossSpawnSpawner.node,
@@ -2604,6 +2606,36 @@ it.instance("orphaned reply heals the dangling question part and re-enters the l
     expect(part?.state.title).toBe("Asked 1 question")
     expect(part?.state.metadata).toEqual({ answers: [["Yes"]] })
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("orphaned reply after a restart puts the answered question back in front of the model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const recovery = yield* SessionRecovery.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* recovery.init()
+    yield* llm.text("resumed")
+
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+
+    const message = yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id)
+    const info = Option.getOrThrow(message).info
+    expect(info.role).toBe("assistant")
+    if (info.role !== "assistant") return
+    expect(info.error).toBeUndefined()
+    expect(info.finish).toBe("tool-calls")
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(1)
+    const messages = hits[0].body.messages as Array<{ role: string; content: unknown }>
+    expect(messages.filter((item) => item.role === "tool").map((item) => item.content)).toEqual([
+      formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }),
+    ])
   }),
 )
 

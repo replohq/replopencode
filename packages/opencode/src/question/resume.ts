@@ -33,6 +33,13 @@ export const resumeOrphanedReply = Effect.fn("Question.resumeOrphanedReply")(fun
           time: { start: started, end: Date.now() },
         },
       })
+      // Boot recovery marked this turn as failed by the restart. An errored turn is dropped from
+      // model history, so the model would never see its own question or the answer and ask again.
+      const info = Option.isSome(message) ? message.value.info : undefined
+      if (info && info.role === "assistant" && info.error) {
+        const { error: _restartError, ...recovered } = info
+        yield* sessions.updateMessage({ ...recovered, finish: "tool-calls" })
+      }
     }
   }
 

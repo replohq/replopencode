@@ -43,6 +43,14 @@ const rejectEffect = Effect.fn("QuestionTest.reject")(function* (id: QuestionID)
   yield* question.reject(id)
 })
 
+const saveProgressEffect = Effect.fn("QuestionTest.saveProgress")(function* (input: {
+  requestID: QuestionID
+  answers: ReadonlyArray<Question.Answer>
+}) {
+  const question = yield* Question.Service
+  yield* question.saveProgress(input)
+})
+
 afterEach(async () => {
   await disposeAllInstances()
 })
@@ -503,6 +511,7 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     }).pipe(provideInstance(dir), Effect.forkScoped)
 
     const pending = yield* waitForPending(1).pipe(provideInstance(dir))
+    yield* saveProgressEffect({ requestID: pending[0].id, answers: [["Yes"]] }).pipe(provideInstance(dir))
     yield* InstanceStore.Service.use((store) => store.reload({ directory: dir }))
     yield* Fiber.await(fiber)
 
@@ -511,6 +520,7 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     expect(survived[0].id).toBe(pending[0].id)
     expect(survived[0].sessionID).toBe(SessionID.make("ses_survive"))
     expect(survived[0].questions).toEqual(questions)
+    expect(survived[0].progress).toEqual([["Yes"]])
 
     const replied = yield* Effect.gen(function* () {
       const events = yield* EventV2Bridge.Service
@@ -537,8 +547,6 @@ it.instance(
   "saveProgress - lists partial answers, and fails once the question is answered",
   () =>
     Effect.gen(function* () {
-      const saveProgress = (requestID: QuestionID, answers: ReadonlyArray<Question.Answer>) =>
-        Question.Service.use((svc) => svc.saveProgress({ requestID, answers }))
       const fiber = yield* askEffect({
         sessionID: SessionID.make("ses_progress"),
         questions: [
@@ -550,12 +558,12 @@ it.instance(
       // Clients that never save progress see exactly the payload they did before.
       expect(request).not.toHaveProperty("progress")
 
-      yield* saveProgress(request.id, [["Bold"], []])
+      yield* saveProgressEffect({ requestID: request.id, answers: [["Bold"], []] })
       expect((yield* listEffect)[0]?.progress).toEqual([["Bold"], []])
 
       yield* replyEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] })
       expect(yield* Fiber.join(fiber)).toEqual([["Bold"], ["Red"]])
-      const exit = yield* saveProgress(request.id, [["Bold"], ["Red"]]).pipe(Effect.exit)
+      const exit = yield* saveProgressEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] }).pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.NotFoundError)
     }),

@@ -7,6 +7,9 @@ export type Runtime = {
   InstanceStore: (typeof import("../../../src/project/instance-store"))["InstanceStore"]
   Session: (typeof import("../../../src/session/session"))["Session"]
   Todo: (typeof import("../../../src/session/todo"))["Todo"]
+  Question: (typeof import("../../../src/question"))["Question"]
+  Database: (typeof import("@opencode-ai/core/database/database"))["Database"]
+  QuestionRequestTable: (typeof import("@opencode-ai/core/session/sql"))["QuestionRequestTable"]
   Worktree: (typeof import("../../../src/worktree"))["Worktree"]
   Project: (typeof import("../../../src/project/project"))["Project"]
   Tui: typeof import("../../../src/server/shared/tui-control")
@@ -27,6 +30,9 @@ export function runtime() {
     const instanceStore = await import("../../../src/project/instance-store")
     const session = await import("../../../src/session/session")
     const todo = await import("../../../src/session/todo")
+    const question = await import("../../../src/question")
+    const database = await import("@opencode-ai/core/database/database")
+    const sql = await import("@opencode-ai/core/session/sql")
     const worktree = await import("../../../src/worktree")
     const project = await import("../../../src/project/project")
     const tui = await import("../../../src/server/shared/tui-control")
@@ -41,6 +47,9 @@ export function runtime() {
       InstanceStore: instanceStore.InstanceStore,
       Session: session.Session,
       Todo: todo.Todo,
+      Question: question.Question,
+      Database: database.Database,
+      QuestionRequestTable: sql.QuestionRequestTable,
       Worktree: worktree.Worktree,
       Project: project.Project,
       Tui: tui,

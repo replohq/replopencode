@@ -52,8 +52,7 @@ export const QuestionApi = HttpApi.make("question")
           OpenApi.annotations({
             identifier: "question.progress",
             summary: "Save question progress",
-            description:
-              "Save the answers given so far without replying, so every client sees them and the recommended answer is used only for the rest.",
+            description: "Save the answers given so far without replying, so any client can show them.",
           }),
         ),
         HttpApiEndpoint.post("reject", `${root}/:requestID/reject`, {

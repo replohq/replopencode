@@ -4728,6 +4728,107 @@
         ]
       }
     },
+    "/question/{requestID}/progress": {
+      "put": {
+        "tags": ["question"],
+        "operationId": "question.progress",
+        "parameters": [
+          {
+            "name": "requestID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^que"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Progress saved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean",
+                  "description": "Progress saved successfully"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "QuestionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionNotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Save the answers given so far without replying, so any client can show them.",
+        "summary": "Save question progress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "answers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/QuestionAnswer"
+                    },
+                    "description": "User answers in order of questions (each answer is an array of selected labels)"
+                  }
+                },
+                "required": ["answers"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.question.progress({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/question/{requestID}/reject": {
       "post": {
         "tags": ["question"],
@@ -20120,6 +20221,12 @@
                       },
                       "tool": {
                         "$ref": "#/components/schemas/QuestionTool"
+                      },
+                      "progress": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/QuestionAnswer"
+                        }
                       }
                     },
                     "required": ["id", "sessionID", "questions"],
@@ -20755,6 +20862,9 @@
               },
               "setCacheKey": {
                 "type": "boolean"
+              },
+              "promptCacheKey": {
+                "type": "string"
               },
               "timeout": {
                 "anyOf": [
@@ -22825,6 +22935,12 @@
           },
           "tool": {
             "$ref": "#/components/schemas/QuestionTool"
+          },
+          "progress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionAnswer"
+            }
           }
         },
         "required": ["id", "sessionID", "questions"],
@@ -33282,6 +33398,12 @@
               },
               "tool": {
                 "$ref": "#/components/schemas/QuestionTool"
+              },
+              "progress": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QuestionAnswer"
+                }
               }
             },
             "required": ["id", "sessionID", "questions"],
@@ -36394,6 +36516,12 @@
               },
               "tool": {
                 "$ref": "#/components/schemas/QuestionTool"
+              },
+              "progress": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QuestionAnswer"
+                }
               }
             },
             "required": ["id", "sessionID", "questions"],

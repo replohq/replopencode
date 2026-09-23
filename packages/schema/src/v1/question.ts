@@ -17,6 +17,8 @@ export const Option = Schema.Struct({
   description: Schema.String.annotate({ description: "Explanation of choice" }),
 }).annotate({ identifier: "QuestionOption" })
 
+export const Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionAnswer" })
+
 const base = {
   question: Schema.String.annotate({ description: "Complete question" }),
   header: Schema.String.annotate({ description: "Very short label (max 30 chars)" }),
@@ -37,8 +39,10 @@ export const Request = Schema.Struct({
   sessionID: SessionID,
   questions: Schema.Array(Info).annotate({ description: "Questions to ask" }),
   tool: Schema.optional(Tool),
+  progress: Schema.optional(Schema.Array(Answer)).annotate({
+    description: "Answers saved before the reply, in question order (empty for a question not answered yet)",
+  }),
 }).annotate({ identifier: "QuestionRequest" })
-export const Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionAnswer" })
 export const Reply = Schema.Struct({
   answers: Schema.Array(Answer).annotate({
     description: "User answers in order of questions (each answer is an array of selected labels)",

@@ -322,13 +322,34 @@ const scenarios: Scenario[] = [
     }))
     .status(400),
   http.protected
-    .put("/question/{requestID}/progress", "question.progress")
+    .put("/question/{requestID}/progress", "question.progress.missing")
     .at((ctx) => ({
       path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
       headers: ctx.headers(),
       body: { answers: [["Yes"]] },
     }))
     .json(404, object, "status"),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Question progress owner" })
+        return yield* ctx.question(session.id)
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: ctx.state }),
+      headers: ctx.headers(),
+      body: { answers: [["Yes"]] },
+    }))
+    .jsonEffect(200, (body, ctx) =>
+      Effect.gen(function* () {
+        check(body === true, "question progress should return true")
+        const saved = (yield* ctx.questions()).find((request) => request.id === ctx.state)
+        check(stable(saved?.progress) === stable([["Yes"]]), "saved progress should be listed with its question")
+      }),
+    ),
   http.protected
     .post("/question/{requestID}/reject", "question.reject")
     .at((ctx) => ({

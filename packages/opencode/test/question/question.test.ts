@@ -530,3 +530,34 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     expect(after).toHaveLength(0)
   }),
 )
+
+// progress
+
+it.instance(
+  "saveProgress - lists partial answers, and fails once the question is answered",
+  () =>
+    Effect.gen(function* () {
+      const saveProgress = (requestID: QuestionID, answers: ReadonlyArray<Question.Answer>) =>
+        Question.Service.use((svc) => svc.saveProgress({ requestID, answers }))
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_progress"),
+        questions: [
+          { question: "Which layout?", header: "Layout", options: [{ label: "Bold", description: "Big image" }] },
+          { question: "Which color?", header: "Color", options: [{ label: "Red", description: "Warm" }] },
+        ],
+      }).pipe(Effect.forkScoped)
+      const [request] = yield* waitForPending(1)
+      // Clients that never save progress see exactly the payload they did before.
+      expect(request).not.toHaveProperty("progress")
+
+      yield* saveProgress(request.id, [["Bold"], []])
+      expect((yield* listEffect)[0]?.progress).toEqual([["Bold"], []])
+
+      yield* replyEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] })
+      expect(yield* Fiber.join(fiber)).toEqual([["Bold"], ["Red"]])
+      const exit = yield* saveProgress(request.id, [["Bold"], ["Red"]]).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.NotFoundError)
+    }),
+  { git: true },
+)

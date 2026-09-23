@@ -10,6 +10,8 @@ import { Truncate } from "@/tool/truncate"
 import { seedSession } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 
 const ctx = {
   sessionID: SessionID.make("ses_test-session"),
@@ -91,6 +93,42 @@ describe("tool.question", () => {
 
       const result = yield* Fiber.join(fiber)
       expect(result.output).toContain(`"What is your favorite animal?"="Dog"`)
+    }),
+  )
+
+  it.instance("tells the model which answers were chosen for the user", () =>
+    Effect.gen(function* () {
+      yield* seedSession(ctx.sessionID)
+      const { db } = yield* Database.Service
+      yield* db
+        .update(SessionTable)
+        .set({ metadata: { [Question.AUTO_ANSWER_DELAY_KEY]: 20 } })
+        .where(eq(SessionTable.id, ctx.sessionID))
+        .run()
+      const tool = yield* (yield* QuestionTool).init()
+
+      const result = yield* tool.execute(
+        {
+          questions: [
+            {
+              question: "What is your favorite color?",
+              header: "Color",
+              options: [
+                { label: "Red", description: "The color of passion" },
+                { label: "Blue", description: "The color of sky" },
+              ],
+              recommended: ["Blue"],
+            },
+          ],
+        },
+        ctx,
+      )
+
+      expect(result.metadata).toMatchObject({ answers: [["Blue"]], autoAnswered: [true] })
+      expect(result.output).toContain(
+        `"What is your favorite color?"="Blue" (your recommendation, used because the user did not answer in time)`,
+      )
+      expect(result.output).toContain("do not ask again")
     }),
   )
 

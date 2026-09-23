@@ -17,11 +17,16 @@ export const Option = Schema.Struct({
   description: Schema.String.annotate({ description: "Explanation of choice" }),
 }).annotate({ identifier: "QuestionOption" })
 
+export const Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionAnswer" })
+
 const base = {
   question: Schema.String.annotate({ description: "Complete question" }),
   header: Schema.String.annotate({ description: "Very short label (max 30 chars)" }),
   options: Schema.Array(Option).annotate({ description: "Available choices" }),
   multiple: Schema.optional(Schema.Boolean).annotate({ description: "Allow selecting multiple choices" }),
+  recommended: Schema.optional(Answer).annotate({
+    description: "Exact label(s) of the option(s) you recommend; used for the user if they do not answer in time",
+  }),
 }
 
 export const Info = Schema.Struct({
@@ -37,8 +42,10 @@ export const Request = Schema.Struct({
   sessionID: SessionID,
   questions: Schema.Array(Info).annotate({ description: "Questions to ask" }),
   tool: Schema.optional(Tool),
+  progress: Schema.optional(Schema.Array(Answer)).annotate({
+    description: "Answers saved before the reply, in question order (empty for a question not answered yet)",
+  }),
 }).annotate({ identifier: "QuestionRequest" })
-export const Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionAnswer" })
 export const Reply = Schema.Struct({
   answers: Schema.Array(Answer).annotate({
     description: "User answers in order of questions (each answer is an array of selected labels)",
@@ -48,6 +55,9 @@ export const Replied = Schema.Struct({
   sessionID: SessionID,
   requestID: ID,
   answers: Schema.Array(Answer),
+  autoAnswered: Schema.optional(Schema.Array(Schema.Boolean)).annotate({
+    description: "Per question, true when nobody answered in time and the recommended answer was used",
+  }),
 }).annotate({
   identifier: "QuestionReplied",
 })

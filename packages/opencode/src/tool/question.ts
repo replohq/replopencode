@@ -10,6 +10,7 @@ export const Parameters = Schema.Struct({
 
 type Metadata = {
   answers: ReadonlyArray<Question.Answer>
+  autoAnswered?: ReadonlyArray<boolean>
 }
 
 export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Service>(
@@ -22,7 +23,7 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
-          const answers = yield* question.ask({
+          const { answers, autoAnswered } = yield* question.ask({
             sessionID: ctx.sessionID,
             questions: params.questions,
             tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
@@ -30,10 +31,8 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
 
           return {
             title: `Asked ${params.questions.length} question${params.questions.length > 1 ? "s" : ""}`,
-            output: formatAnswerOutput({ questions: params.questions, answers }),
-            metadata: {
-              answers,
-            },
+            output: formatAnswerOutput({ questions: params.questions, answers, autoAnswered }),
+            metadata: autoAnswered ? { answers, autoAnswered } : { answers },
           }
         }).pipe(Effect.orDie),
     }

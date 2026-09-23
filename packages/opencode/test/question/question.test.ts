@@ -11,6 +11,8 @@ import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 
 const questionLayer = LayerNode.compile(
   LayerNode.group([Question.node, EventV2Bridge.node, CrossSpawnSpawner.node, Database.node]),
@@ -154,7 +156,7 @@ it.instance(
       })
 
       expect(outcome.outcome).toBe("resolved")
-      expect(yield* Fiber.join(fiber)).toEqual([["Option 1"]])
+      expect(yield* Fiber.join(fiber)).toEqual({ answers: [["Option 1"]] })
     }),
   { git: true },
 )
@@ -318,7 +320,7 @@ it.instance(
         answers: [["Build"], ["Dev"]],
       })
 
-      expect(yield* Fiber.join(fiber)).toEqual([["Build"], ["Dev"]])
+      expect(yield* Fiber.join(fiber)).toEqual({ answers: [["Build"], ["Dev"]] })
     }),
   { git: true },
 )
@@ -529,4 +531,193 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     const after = yield* listEffect.pipe(provideInstance(dir))
     expect(after).toHaveLength(0)
   }),
+)
+
+// auto-answer
+
+const setAutoAnswerDelay = Effect.fn("QuestionTest.setAutoAnswerDelay")(function* (
+  sessionID: SessionID,
+  delay: number | undefined,
+) {
+  const { db } = yield* Database.Service
+  yield* db
+    .update(SessionTable)
+    .set({ metadata: delay === undefined ? {} : { [Question.AUTO_ANSWER_DELAY_KEY]: delay } })
+    .where(eq(SessionTable.id, sessionID))
+    .run()
+})
+
+const askWithAutoAnswer = Effect.fn("QuestionTest.askWithAutoAnswer")(function* (input: {
+  sessionID: SessionID
+  questions: ReadonlyArray<Question.Info>
+  delay: number
+}) {
+  yield* seedSession(input.sessionID)
+  yield* setAutoAnswerDelay(input.sessionID, input.delay)
+  return yield* Question.Service.use((svc) => svc.ask({ sessionID: input.sessionID, questions: input.questions }))
+})
+
+const repliedEvents = Effect.fn("QuestionTest.repliedEvents")(function* () {
+  const events = yield* EventV2Bridge.Service
+  const seen: unknown[] = []
+  const off = yield* events.listen((event) => {
+    if (event.type === Question.Event.Replied.type) seen.push(event.data)
+    return Effect.void
+  })
+  yield* Effect.addFinalizer(() => off)
+  return seen
+})
+
+const layout = (recommended?: ReadonlyArray<string>): Question.Info => ({
+  question: "Which layout?",
+  header: "Layout",
+  options: [
+    { label: "Bold", description: "Big image" },
+    { label: "Quiet", description: "Text-led" },
+  ],
+  ...(recommended ? { recommended } : {}),
+})
+
+const color = (recommended?: ReadonlyArray<string>): Question.Info => ({
+  question: "Which color?",
+  header: "Color",
+  options: [
+    { label: "Red", description: "Warm" },
+    { label: "Blue", description: "Cool" },
+  ],
+  ...(recommended ? { recommended } : {}),
+})
+
+it.instance(
+  "auto-answer - uses the recommendation once the delay passes",
+  () =>
+    Effect.gen(function* () {
+      const replied = yield* repliedEvents()
+      const result = yield* askWithAutoAnswer({
+        sessionID: SessionID.make("ses_auto"),
+        questions: [layout(["Quiet"])],
+        delay: 20,
+      })
+
+      expect(result).toEqual({ answers: [["Quiet"]], autoAnswered: [true] })
+      expect(replied).toMatchObject([{ answers: [["Quiet"]], autoAnswered: [true] }])
+      expect(yield* listEffect).toHaveLength(0)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "auto-answer - keeps saved progress and uses the recommendation only for the rest",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askWithAutoAnswer({
+        sessionID: SessionID.make("ses_auto_progress"),
+        questions: [layout(["Bold"]), color(["Blue"])],
+        delay: 200,
+      }).pipe(Effect.forkScoped)
+      const [request] = yield* waitForPending(1)
+      yield* Question.Service.use((svc) => svc.saveProgress({ requestID: request.id, answers: [["Quiet"], []] }))
+
+      expect(yield* Fiber.join(fiber)).toEqual({ answers: [["Quiet"], ["Blue"]], autoAnswered: [false, true] })
+    }),
+  { git: true },
+)
+
+it.instance(
+  "auto-answer - waits for a person when any question has no recommendation",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askWithAutoAnswer({
+        sessionID: SessionID.make("ses_auto_unrecommended"),
+        questions: [layout(["Bold"]), color()],
+        delay: 20,
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      yield* Effect.sleep("150 millis")
+
+      expect(yield* listEffect).toHaveLength(1)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "auto-answer - never fires without the session setting",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_auto_unset"),
+        questions: [layout(["Bold"])],
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      yield* Effect.sleep("150 millis")
+
+      expect(yield* listEffect).toHaveLength(1)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "auto-answer - a person answering first wins and the timer never fires",
+  () =>
+    Effect.gen(function* () {
+      const replied = yield* repliedEvents()
+      const fiber = yield* askWithAutoAnswer({
+        sessionID: SessionID.make("ses_auto_race"),
+        questions: [layout(["Bold"])],
+        delay: 100,
+      }).pipe(Effect.forkScoped)
+      const [request] = yield* waitForPending(1)
+      yield* replyEffect({ requestID: request.id, answers: [["Quiet"]] })
+
+      expect(yield* Fiber.join(fiber)).toEqual({ answers: [["Quiet"]] })
+      yield* Effect.sleep("250 millis")
+      expect(replied).toHaveLength(1)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "auto-answer - clearing the setting stops a question already waiting",
+  () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("ses_auto_cleared")
+      const fiber = yield* askWithAutoAnswer({ sessionID, questions: [layout(["Bold"])], delay: 100 }).pipe(
+        Effect.forkScoped,
+      )
+      yield* waitForPending(1)
+      yield* setAutoAnswerDelay(sessionID, undefined)
+      yield* Effect.sleep("250 millis")
+
+      expect(yield* listEffect).toHaveLength(1)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "saveProgress - is listed, and fails once the question is answered",
+  () =>
+    Effect.gen(function* () {
+      const saveProgress = (requestID: QuestionID, answers: ReadonlyArray<Question.Answer>) =>
+        Question.Service.use((svc) => svc.saveProgress({ requestID, answers }))
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_progress"),
+        questions: [layout(), color()],
+      }).pipe(Effect.forkScoped)
+      const [request] = yield* waitForPending(1)
+      yield* saveProgress(request.id, [["Bold"], []])
+
+      expect((yield* listEffect)[0]?.progress).toEqual([["Bold"], []])
+      yield* replyEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] })
+      yield* Fiber.join(fiber)
+      const exit = yield* saveProgress(request.id, [["Quiet"], []]).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.NotFoundError)
+    }),
+  { git: true },
 )

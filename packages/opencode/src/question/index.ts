@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Layer, Schema, Context } from "effect"
+import { Cause, Deferred, Duration, Effect, Layer, Schema, Context } from "effect"
 import { and, asc, eq, inArray } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { QuestionRequestTable, SessionTable } from "@opencode-ai/core/session/sql"
@@ -37,9 +37,19 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
   requestID: QuestionID,
 }) {}
 
+// Session metadata key. The client sets it per session (PATCH /session/:id) to the milliseconds a question may
+// wait before its recommended answer is used; unset means questions wait for a person.
+export const AUTO_ANSWER_DELAY_KEY = "questionAutoAnswerDelayMs"
+
+export interface Answered {
+  readonly answers: ReadonlyArray<Answer>
+  /** Per question, true when nobody answered in time and the recommended answer was used. Absent on a person's reply. */
+  readonly autoAnswered?: ReadonlyArray<boolean>
+}
+
 interface PendingEntry {
   info: Request
-  deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
+  deferred: Deferred.Deferred<Answered, RejectedError>
 }
 
 interface State {
@@ -63,11 +73,15 @@ export interface Interface {
     sessionID: SessionID
     questions: ReadonlyArray<Info>
     tool?: Tool
-  }) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
+  }) => Effect.Effect<Answered, RejectedError>
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
   }) => Effect.Effect<ReplyOutcome, NotFoundError>
+  readonly saveProgress: (input: {
+    requestID: QuestionID
+    answers: ReadonlyArray<Answer>
+  }) => Effect.Effect<void, NotFoundError>
   readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
   readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
@@ -109,7 +123,11 @@ const layer = Layer.effect(
       const id = QuestionID.ascending()
       yield* Effect.logInfo("asking", { id, questions: input.questions.length })
 
-      const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
+      const deferred = yield* Deferred.make<Answered, RejectedError>()
+      // Leaving a question without a recommendation is how the model says only the user can decide it.
+      const delay = input.questions.every((question) => question.recommended?.length)
+        ? yield* autoAnswerDelay(input.sessionID)
+        : undefined
       const info: Request = {
         id,
         sessionID: input.sessionID,
@@ -128,6 +146,17 @@ const layer = Layer.effect(
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
 
+      if (delay !== undefined) {
+        // A child of this ask, so however the question settles, the timer ends with it.
+        yield* Effect.sleep(Duration.millis(delay)).pipe(
+          Effect.andThen(autoAnswer(id)),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.logWarning("auto-answer failed", { id, cause }),
+          ),
+          Effect.forkChild,
+        )
+      }
+
       return yield* Effect.ensuring(
         Deferred.await(deferred),
         Effect.sync(() => {
@@ -139,22 +168,40 @@ const layer = Layer.effect(
     // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
     // Scoped to this instance's project (like list) so co-located instances sharing the global DB
     // cannot consume each other's live requests.
-    const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
+    const inProject = Effect.fn("Question.inProject")(function* (requestID: QuestionID) {
       const ctx = yield* InstanceState.context
+      return and(
+        eq(QuestionRequestTable.id, requestID),
+        inArray(
+          QuestionRequestTable.session_id,
+          db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, ctx.project.id)),
+        ),
+      )
+    })
+
+    const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
       return yield* db
         .delete(QuestionRequestTable)
-        .where(
-          and(
-            eq(QuestionRequestTable.id, requestID),
-            inArray(
-              QuestionRequestTable.session_id,
-              db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, ctx.project.id)),
-            ),
-          ),
-        )
+        .where(yield* inProject(requestID))
         .returning()
         .get()
         .pipe(Effect.orDie)
+    })
+
+    // Publishes the reply and hands it to the waiting ask when that ask is still alive in this process.
+    const settle = Effect.fn("Question.settle")(function* (request: Request, answered: Answered) {
+      yield* events.publish(Event.Replied, {
+        sessionID: request.sessionID,
+        requestID: request.id,
+        answers: answered.answers.map((a) => [...a]),
+        ...(answered.autoAnswered ? { autoAnswered: [...answered.autoAnswered] } : {}),
+      })
+      const pending = (yield* InstanceState.get(state)).pending
+      const existing = pending.get(request.id)
+      if (!existing) return "orphaned" as const
+      pending.delete(request.id)
+      // False when instance disposal already failed this waiter.
+      return (yield* Deferred.succeed(existing.deferred, answered)) ? ("resolved" as const) : ("disposed" as const)
     })
 
     const reply = Effect.fn("Question.reply")(function* (input: {
@@ -168,25 +215,64 @@ const layer = Layer.effect(
       }
       const request = rowToRequest(row)
       yield* Effect.logInfo("replied", { requestID: input.requestID, answers: input.answers })
-      yield* events.publish(Event.Replied, {
-        sessionID: request.sessionID,
-        requestID: request.id,
-        answers: input.answers.map((a) => [...a]),
+      const settled = yield* settle(request, { answers: input.answers })
+      if (settled === "resolved") return { outcome: "resolved" } as const
+      // Without a live waiter the answers still need the orphaned heal path.
+      yield* Effect.logInfo(
+        settled === "orphaned" ? "reply for orphaned request" : "reply raced instance disposal, treating as orphaned",
+        { requestID: input.requestID },
+      )
+      return { outcome: "orphaned", request } as const
+    })
+
+    const autoAnswerDelay = Effect.fn("Question.autoAnswerDelay")(function* (sessionID: SessionID) {
+      const row = yield* db
+        .select({ metadata: SessionTable.metadata })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      const delay = row?.metadata?.[AUTO_ANSWER_DELAY_KEY]
+      return typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? delay : undefined
+    })
+
+    // Only a question whose ask is live in this process is answered: after a restart there is no turn to hand the
+    // answer to, so the question waits for a person and their reply resumes the turn.
+    const autoAnswer = Effect.fn("Question.autoAnswer")(function* (requestID: QuestionID) {
+      const entry = (yield* InstanceState.get(state)).pending.get(requestID)
+      // Re-read at fire time so clearing the setting also stops questions already waiting.
+      if (!entry || (yield* autoAnswerDelay(entry.info.sessionID)) === undefined) return
+      const row = yield* claim(requestID)
+      if (!row) return
+      const request = rowToRequest(row)
+      const answers = request.questions.map((question, index) => {
+        const saved = request.progress?.[index]
+        return saved?.length ? saved : (question.recommended ?? [])
       })
-      const pending = (yield* InstanceState.get(state)).pending
-      const existing = pending.get(input.requestID)
-      if (!existing) {
-        yield* Effect.logInfo("reply for orphaned request", { requestID: input.requestID })
-        return { outcome: "orphaned", request } as const
-      }
-      pending.delete(input.requestID)
-      const delivered = yield* Deferred.succeed(existing.deferred, input.answers)
-      if (!delivered) {
-        // Instance disposal already failed this waiter; the answers still need the orphaned heal path.
-        yield* Effect.logInfo("reply raced instance disposal, treating as orphaned", { requestID: input.requestID })
-        return { outcome: "orphaned", request } as const
-      }
-      return { outcome: "resolved" } as const
+      const autoAnswered = request.questions.map((_, index) => !request.progress?.[index]?.length)
+      yield* Effect.logInfo("auto-answered", { requestID, answers, autoAnswered })
+      const settled = yield* settle(request, { answers, autoAnswered })
+      // Only instance disposal between the check above and the claim lands here; boot recovery then closes the turn.
+      if (settled !== "resolved") yield* Effect.logWarning("auto-answer lost its waiter", { requestID, settled })
+    })
+
+    const saveProgress = Effect.fn("Question.saveProgress")(function* (input: {
+      requestID: QuestionID
+      answers: ReadonlyArray<Answer>
+    }) {
+      const where = yield* inProject(input.requestID)
+      const row = yield* db.select().from(QuestionRequestTable).where(where).get().pipe(Effect.orDie)
+      // A reply can claim the row between the read and the write; the write then matches nothing.
+      const saved =
+        row &&
+        (yield* db
+          .update(QuestionRequestTable)
+          .set({ data: { ...row.data, progress: input.answers.map((a) => [...a]) } })
+          .where(where)
+          .returning({ id: QuestionRequestTable.id })
+          .get()
+          .pipe(Effect.orDie))
+      if (!saved) return yield* new NotFoundError({ requestID: input.requestID })
     })
 
     const rejectClaimed = Effect.fn("Question.rejectClaimed")(function* (row: QuestionRequestRow) {
@@ -234,7 +320,7 @@ const layer = Layer.effect(
       return rows.map((x) => rowToRequest(x.request))
     })
 
-    return Service.of({ ask, reply, reject, rejectAllForSession, list })
+    return Service.of({ ask, reply, saveProgress, reject, rejectAllForSession, list })
   }),
 )
 

@@ -46,23 +46,6 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       return true
     })
 
-    const progress = Effect.fn("QuestionHttpApi.progress")(function* (ctx: {
-      params: { requestID: QuestionID }
-      payload: Question.Reply
-    }) {
-      yield* svc.saveProgress({ requestID: ctx.params.requestID, answers: ctx.payload.answers }).pipe(
-        Effect.catchTag("Question.NotFoundError", (error) =>
-          Effect.fail(
-            new QuestionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Question request not found: ${error.requestID}`,
-            }),
-          ),
-        ),
-      )
-      return true
-    })
-
     const reject = Effect.fn("QuestionHttpApi.reject")(function* (ctx: { params: { requestID: QuestionID } }) {
       yield* svc.reject(ctx.params.requestID).pipe(
         Effect.catchTag("Question.NotFoundError", (error) =>
@@ -77,6 +60,6 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       return true
     })
 
-    return handlers.handle("list", list).handle("reply", reply).handle("progress", progress).handle("reject", reject)
+    return handlers.handle("list", list).handle("reply", reply).handle("reject", reject)
   }),
 )

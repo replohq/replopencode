@@ -42,20 +42,6 @@ export const QuestionApi = HttpApi.make("question")
             description: "Provide answers to a question request from the AI assistant.",
           }),
         ),
-        HttpApiEndpoint.put("progress", `${root}/:requestID/progress`, {
-          params: { requestID: QuestionID },
-          query: WorkspaceRoutingQuery,
-          payload: ReplyPayload,
-          success: described(Schema.Boolean, "Progress saved successfully"),
-          error: [HttpApiError.BadRequest, QuestionNotFoundError],
-        }).annotateMerge(
-          OpenApi.annotations({
-            identifier: "question.progress",
-            summary: "Save question progress",
-            description:
-              "Save the answers given so far without replying, so every client sees them and the recommended answer is used only for the rest.",
-          }),
-        ),
         HttpApiEndpoint.post("reject", `${root}/:requestID/reject`, {
           params: { requestID: QuestionID },
           query: WorkspaceRoutingQuery,

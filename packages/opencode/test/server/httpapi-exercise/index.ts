@@ -314,22 +314,6 @@ const scenarios: Scenario[] = [
     }))
     .json(404, object, "status"),
   http.protected
-    .put("/question/{requestID}/progress", "question.progress.invalid")
-    .at((ctx) => ({
-      path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
-      headers: ctx.headers(),
-      body: { answers: "Yes" },
-    }))
-    .status(400),
-  http.protected
-    .put("/question/{requestID}/progress", "question.progress")
-    .at((ctx) => ({
-      path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
-      headers: ctx.headers(),
-      body: { answers: [["Yes"]] },
-    }))
-    .json(404, object, "status"),
-  http.protected
     .post("/question/{requestID}/reject", "question.reject")
     .at((ctx) => ({
       path: route("/question/{requestID}/reject", { requestID: "que_httpapi_reject" }),

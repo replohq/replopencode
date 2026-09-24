@@ -31,7 +31,7 @@ const base = {
 }
 
 const recommendedDescription =
-  "Exact label(s) of the option(s) you would pick yourself; empty only when the choice is the user's alone"
+  "Exact label(s) of the option(s) you would pick yourself; empty when you have no genuine preference or the choice is the user's alone"
 
 export const Info = Schema.Struct({
   ...base,
@@ -45,7 +45,7 @@ export const Info = Schema.Struct({
     }),
   ),
 }).annotate({ identifier: "QuestionInfo" })
-// The tool requires a recommendation, so the model always decides; an empty list is its explicit "the user decides".
+// The tool requires a recommendation, so the model always decides; an empty list means no genuine preference or "the user decides".
 export const Prompt = Schema.Struct({
   ...base,
   recommended: Schema.Array(Schema.String).annotate({ description: recommendedDescription }),

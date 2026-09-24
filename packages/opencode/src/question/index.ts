@@ -68,10 +68,6 @@ export interface Interface {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
   }) => Effect.Effect<ReplyOutcome, NotFoundError>
-  readonly saveProgress: (input: {
-    requestID: QuestionID
-    answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<void, NotFoundError>
   readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
   readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
@@ -143,21 +139,19 @@ const layer = Layer.effect(
     // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
     // Scoped to this instance's project (like list) so co-located instances sharing the global DB
     // cannot consume each other's live requests.
-    const inProject = Effect.fn("Question.inProject")(function* (requestID: QuestionID) {
-      const ctx = yield* InstanceState.context
-      return and(
-        eq(QuestionRequestTable.id, requestID),
-        inArray(
-          QuestionRequestTable.session_id,
-          db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, ctx.project.id)),
-        ),
-      )
-    })
-
     const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
+      const ctx = yield* InstanceState.context
       return yield* db
         .delete(QuestionRequestTable)
-        .where(yield* inProject(requestID))
+        .where(
+          and(
+            eq(QuestionRequestTable.id, requestID),
+            inArray(
+              QuestionRequestTable.session_id,
+              db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, ctx.project.id)),
+            ),
+          ),
+        )
         .returning()
         .get()
         .pipe(Effect.orDie)
@@ -193,26 +187,6 @@ const layer = Layer.effect(
         return { outcome: "orphaned", request } as const
       }
       return { outcome: "resolved" } as const
-    })
-
-    // Partial answers, so a person can finish a multi-step question from any client, or after a reload.
-    const saveProgress = Effect.fn("Question.saveProgress")(function* (input: {
-      requestID: QuestionID
-      answers: ReadonlyArray<Answer>
-    }) {
-      const where = yield* inProject(input.requestID)
-      const row = yield* db.select().from(QuestionRequestTable).where(where).get().pipe(Effect.orDie)
-      // A reply can claim the row between the read and the write; the write then matches nothing.
-      const saved =
-        row &&
-        (yield* db
-          .update(QuestionRequestTable)
-          .set({ data: { ...row.data, progress: input.answers.map((a) => [...a]) } })
-          .where(where)
-          .returning({ id: QuestionRequestTable.id })
-          .get()
-          .pipe(Effect.orDie))
-      if (!saved) return yield* new NotFoundError({ requestID: input.requestID })
     })
 
     const rejectClaimed = Effect.fn("Question.rejectClaimed")(function* (row: QuestionRequestRow) {
@@ -260,7 +234,7 @@ const layer = Layer.effect(
       return rows.map((x) => rowToRequest(x.request))
     })
 
-    return Service.of({ ask, reply, saveProgress, reject, rejectAllForSession, list })
+    return Service.of({ ask, reply, reject, rejectAllForSession, list })
   }),
 )
 

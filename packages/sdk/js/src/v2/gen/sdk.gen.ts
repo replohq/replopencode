@@ -170,8 +170,6 @@ import type {
   QuestionAnswer,
   QuestionListErrors,
   QuestionListResponses,
-  QuestionProgressErrors,
-  QuestionProgressResponses,
   QuestionRejectErrors,
   QuestionRejectResponses,
   QuestionReplyErrors,
@@ -3041,45 +3039,6 @@ export class Question extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<QuestionReplyResponses, QuestionReplyErrors, ThrowOnError>({
       url: "/question/{requestID}/reply",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Save question progress
-   *
-   * Save the answers given so far without replying, so any client can show them.
-   */
-  public progress<ThrowOnError extends boolean = false>(
-    parameters: {
-      requestID: string
-      directory?: string
-      workspace?: string
-      answers?: Array<QuestionAnswer>
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "requestID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "answers" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).put<QuestionProgressResponses, QuestionProgressErrors, ThrowOnError>({
-      url: "/question/{requestID}/progress",
       ...options,
       ...params,
       headers: {

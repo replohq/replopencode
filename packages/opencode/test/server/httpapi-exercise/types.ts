@@ -6,8 +6,6 @@ import type { Project } from "../../../src/project/project"
 import type { Worktree } from "../../../src/worktree"
 import type { MessageV2 } from "../../../src/session/message-v2"
 import type { SessionID } from "../../../src/session/schema"
-import type { Question } from "../../../src/question"
-import type { QuestionID } from "../../../src/question/schema"
 
 export const OpenApiMethods = ["get", "post", "put", "delete", "patch"] as const
 export const Methods = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const
@@ -63,8 +61,6 @@ export type ScenarioContext = {
   message: (sessionID: SessionID, input?: { text?: string }) => Effect.Effect<MessageSeed>
   messages: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts[]>
   todos: (sessionID: SessionID, todos: TodoInfo[]) => Effect.Effect<void>
-  question: (sessionID: SessionID) => Effect.Effect<QuestionID>
-  questions: () => Effect.Effect<ReadonlyArray<Question.Request>>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>

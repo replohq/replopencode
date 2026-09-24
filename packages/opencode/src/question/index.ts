@@ -37,6 +37,15 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Que
   requestID: QuestionID,
 }) {}
 
+export class InvalidProgressError extends Schema.TaggedErrorClass<InvalidProgressError>()(
+  "Question.InvalidProgressError",
+  { requestID: QuestionID, questions: Schema.Number, answers: Schema.Number },
+) {
+  override get message() {
+    return `Progress has ${this.answers} answers for ${this.questions} questions`
+  }
+}
+
 interface PendingEntry {
   info: Request
   deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
@@ -71,7 +80,7 @@ export interface Interface {
   readonly saveProgress: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<void, NotFoundError>
+  }) => Effect.Effect<void, NotFoundError | InvalidProgressError>
   readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
   readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
@@ -140,9 +149,8 @@ const layer = Layer.effect(
       )
     })
 
-    // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
     // Scoped to this instance's project (like list) so co-located instances sharing the global DB
-    // cannot consume each other's live requests.
+    // cannot see or consume each other's live requests.
     const inProject = Effect.fn("Question.inProject")(function* (requestID: QuestionID) {
       const ctx = yield* InstanceState.context
       return and(
@@ -154,6 +162,7 @@ const layer = Layer.effect(
       )
     })
 
+    // Deleting the row is the claim: whichever concurrent reply/reject wins the delete owns the request.
     const claim = Effect.fn("Question.claim")(function* (requestID: QuestionID) {
       return yield* db
         .delete(QuestionRequestTable)
@@ -202,6 +211,13 @@ const layer = Layer.effect(
     }) {
       const where = yield* inProject(input.requestID)
       const row = yield* db.select().from(QuestionRequestTable).where(where).get().pipe(Effect.orDie)
+      if (row && input.answers.length > row.data.questions.length) {
+        return yield* new InvalidProgressError({
+          requestID: input.requestID,
+          questions: row.data.questions.length,
+          answers: input.answers.length,
+        })
+      }
       // A reply can claim the row between the read and the write; the write then matches nothing.
       const saved =
         row &&
@@ -212,7 +228,14 @@ const layer = Layer.effect(
           .returning({ id: QuestionRequestTable.id })
           .get()
           .pipe(Effect.orDie))
-      if (!saved) return yield* new NotFoundError({ requestID: input.requestID })
+      if (!saved) {
+        yield* Effect.logWarning("progress for unknown request", { requestID: input.requestID })
+        return yield* new NotFoundError({ requestID: input.requestID })
+      }
+      yield* Effect.logInfo("progress saved", {
+        requestID: input.requestID,
+        answered: input.answers.filter((a) => a.length > 0).length,
+      })
     })
 
     const rejectClaimed = Effect.fn("Question.rejectClaimed")(function* (row: QuestionRequestRow) {

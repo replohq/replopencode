@@ -17,7 +17,11 @@ export const Option = Schema.Struct({
   description: Schema.String.annotate({ description: "Explanation of choice" }),
 }).annotate({ identifier: "QuestionOption" })
 
-export const Answer = Schema.Array(Schema.String).annotate({ identifier: "QuestionAnswer" })
+// Bounded so one reply or saved progress cannot bloat the question row that every list reader parses;
+// the caps sit far above real answers (typed text, or every option of one question).
+export const Answer = Schema.Array(Schema.String.check(Schema.isMaxLength(4000)))
+  .check(Schema.isMaxLength(100))
+  .annotate({ identifier: "QuestionAnswer" })
 
 const base = {
   question: Schema.String.annotate({ description: "Complete question" }),
@@ -39,9 +43,12 @@ export const Request = Schema.Struct({
   sessionID: SessionID,
   questions: Schema.Array(Info).annotate({ description: "Questions to ask" }),
   tool: Schema.optional(Tool),
-  progress: Schema.optional(Schema.Array(Answer)).annotate({
-    description: "Answers saved before the reply, in question order (empty for a question not answered yet)",
-  }),
+  progress: Schema.optional(
+    Schema.Array(Answer).annotate({
+      description:
+        "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.",
+    }),
+  ),
 }).annotate({ identifier: "QuestionRequest" })
 export const Reply = Schema.Struct({
   answers: Schema.Array(Answer).annotate({

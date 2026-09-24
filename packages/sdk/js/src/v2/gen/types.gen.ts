@@ -718,6 +718,10 @@ export type QuestionInfo = {
   options: Array<QuestionOption>
   multiple?: boolean
   custom?: boolean
+  /**
+   * Exact label(s) of the option(s) you would pick yourself; empty only when the choice is the user's alone
+   */
+  recommended?: Array<string>
 }
 
 export type QuestionTool = {

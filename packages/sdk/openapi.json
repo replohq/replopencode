@@ -17476,6 +17476,13 @@
           },
           "custom": {
             "type": "boolean"
+          },
+          "recommended": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Exact label(s) of the option(s) you would pick yourself; empty only when the choice is the user's alone"
           }
         },
         "required": ["question", "header", "options"],

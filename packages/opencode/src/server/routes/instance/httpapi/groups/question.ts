@@ -52,7 +52,8 @@ export const QuestionApi = HttpApi.make("question")
           OpenApi.annotations({
             identifier: "question.progress",
             summary: "Save question progress",
-            description: "Save the answers given so far without replying, so any client can show them.",
+            description:
+              "Replace the answers saved so far without replying; read them back from the list route as `progress`. Fails with 400 when more answers than questions are sent, and 404 once the question was replied to or rejected.",
           }),
         ),
         HttpApiEndpoint.post("reject", `${root}/:requestID/reject`, {

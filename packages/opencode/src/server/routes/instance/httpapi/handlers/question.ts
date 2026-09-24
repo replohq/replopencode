@@ -4,7 +4,7 @@ import { QuestionID } from "@/question/schema"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { QuestionNotFoundError } from "../errors"
+import { InvalidRequestError, QuestionNotFoundError } from "../errors"
 
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
@@ -51,14 +51,17 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       payload: Question.Reply
     }) {
       yield* svc.saveProgress({ requestID: ctx.params.requestID, answers: ctx.payload.answers }).pipe(
-        Effect.catchTag("Question.NotFoundError", (error) =>
-          Effect.fail(
-            new QuestionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Question request not found: ${error.requestID}`,
-            }),
-          ),
-        ),
+        Effect.catchTags({
+          "Question.NotFoundError": (error) =>
+            Effect.fail(
+              new QuestionNotFoundError({
+                requestID: String(error.requestID),
+                message: `Question request not found: ${error.requestID}`,
+              }),
+            ),
+          "Question.InvalidProgressError": (error) =>
+            Effect.fail(new InvalidRequestError({ message: error.message, field: "answers" })),
+        }),
       )
       return true
     })

@@ -17448,6 +17448,10 @@
           "description": {
             "type": "string",
             "description": "Explanation of choice"
+          },
+          "recommended": {
+            "type": "boolean",
+            "description": "True on the option you would pick yourself; it may be used for the user if they do not answer in time"
           }
         },
         "required": ["label", "description"],
@@ -24915,6 +24919,9 @@
           "description": {
             "type": "string",
             "description": "Explanation of choice"
+          },
+          "recommended": {
+            "type": "boolean"
           }
         },
         "required": ["label", "description"],

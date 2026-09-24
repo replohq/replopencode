@@ -701,6 +701,10 @@ export type QuestionOption = {
    * Explanation of choice
    */
   description: string
+  /**
+   * True on the option you would pick yourself; it may be used for the user if they do not answer in time
+   */
+  recommended?: boolean
 }
 
 export type QuestionInfo = {
@@ -3148,6 +3152,7 @@ export type QuestionV2Option = {
    * Explanation of choice
    */
   description: string
+  recommended?: boolean
 }
 
 export type QuestionV2Info = {

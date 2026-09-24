@@ -64,6 +64,7 @@ export type ScenarioContext = {
   messages: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts[]>
   todos: (sessionID: SessionID, todos: TodoInfo[]) => Effect.Effect<void>
   question: (sessionID: SessionID) => Effect.Effect<QuestionID>
+  questionProgress: (requestID: QuestionID, answers: ReadonlyArray<Question.Answer>) => Effect.Effect<void>
   questions: () => Effect.Effect<ReadonlyArray<Question.Request>>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>

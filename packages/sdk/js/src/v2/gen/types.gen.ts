@@ -1516,6 +1516,9 @@ export type GlobalEvent = {
            */
           questions: Array<QuestionInfo>
           tool?: QuestionTool
+          /**
+           * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+           */
           progress?: Array<QuestionAnswer>
         }
       }
@@ -2462,6 +2465,9 @@ export type QuestionRequest = {
    */
   questions: Array<QuestionInfo>
   tool?: QuestionTool
+  /**
+   * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+   */
   progress?: Array<QuestionAnswer>
 }
 
@@ -5953,6 +5959,9 @@ export type QuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+     */
     progress?: Array<QuestionAnswer>
   }
 }
@@ -6963,6 +6972,9 @@ export type EventQuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+     */
     progress?: Array<QuestionAnswer>
   }
 }

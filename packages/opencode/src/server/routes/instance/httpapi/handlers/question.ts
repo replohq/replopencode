@@ -4,7 +4,7 @@ import { QuestionID } from "@/question/schema"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { QuestionNotFoundError } from "../errors"
+import { InvalidRequestError, QuestionNotFoundError } from "../errors"
 
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
@@ -46,6 +46,26 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       return true
     })
 
+    const progress = Effect.fn("QuestionHttpApi.progress")(function* (ctx: {
+      params: { requestID: QuestionID }
+      payload: Question.Reply
+    }) {
+      yield* svc.saveProgress({ requestID: ctx.params.requestID, answers: ctx.payload.answers }).pipe(
+        Effect.catchTags({
+          "Question.NotFoundError": (error) =>
+            Effect.fail(
+              new QuestionNotFoundError({
+                requestID: String(error.requestID),
+                message: `Question request not found: ${error.requestID}`,
+              }),
+            ),
+          "Question.InvalidProgressError": (error) =>
+            Effect.fail(new InvalidRequestError({ message: error.message, field: "answers" })),
+        }),
+      )
+      return true
+    })
+
     const reject = Effect.fn("QuestionHttpApi.reject")(function* (ctx: { params: { requestID: QuestionID } }) {
       yield* svc.reject(ctx.params.requestID).pipe(
         Effect.catchTag("Question.NotFoundError", (error) =>
@@ -60,6 +80,6 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       return true
     })
 
-    return handlers.handle("list", list).handle("reply", reply).handle("reject", reject)
+    return handlers.handle("list", list).handle("reply", reply).handle("progress", progress).handle("reject", reject)
   }),
 )

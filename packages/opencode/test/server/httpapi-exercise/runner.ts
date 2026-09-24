@@ -7,6 +7,7 @@ import type { Config } from "../../../src/config/config"
 
 import type { MessageV2 } from "../../../src/session/message-v2"
 import { MessageID, PartID } from "../../../src/session/schema"
+import { QuestionID } from "../../../src/question/schema"
 import { call, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
 import { runtime } from "./runtime"
@@ -177,6 +178,27 @@ function withContext<A, E>(
           messages: (sessionID) =>
             run(modules.Session.Service.use((svc) => svc.messages({ sessionID }).pipe(Effect.orDie))),
           todos: (sessionID, todos) => run(modules.Todo.Service.use((svc) => svc.update({ sessionID, todos }))),
+          // Inserts the row directly: a real ask blocks until someone answers it. The row has no in-memory
+          // waiter, so a reply to it takes the orphaned (restart) path.
+          question: (sessionID) =>
+            run(
+              Effect.gen(function* () {
+                const { db } = yield* modules.Database.Service
+                const id = QuestionID.ascending()
+                const questions = [
+                  { question: "Ship it?", header: "Ship", options: [{ label: "Yes", description: "Ship" }] },
+                ]
+                yield* db
+                  .insert(modules.QuestionRequestTable)
+                  .values({ id, session_id: sessionID, data: { questions } })
+                  .run()
+                  .pipe(Effect.orDie)
+                return id
+              }),
+            ),
+          questionProgress: (requestID, answers) =>
+            run(modules.Question.Service.use((svc) => svc.saveProgress({ requestID, answers }).pipe(Effect.orDie))),
+          questions: () => run(modules.Question.Service.use((svc) => svc.list())),
           worktree: (input) => run(modules.Worktree.Service.use((svc) => svc.create(input).pipe(Effect.orDie))),
           worktreeRemove: (directory) =>
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),

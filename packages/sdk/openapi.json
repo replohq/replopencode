@@ -4799,7 +4799,7 @@
             }
           }
         },
-        "description": "Save the answers given so far without replying, so any client can show them.",
+        "description": "Replace the answers saved so far without replying; read them back from the list route as `progress`. Fails with 400 when more answers than questions are sent, and 404 once the question was replied to or rejected.",
         "summary": "Save question progress",
         "requestBody": {
           "content": {
@@ -17498,8 +17498,10 @@
       "QuestionAnswer": {
         "type": "array",
         "items": {
-          "type": "string"
-        }
+          "type": "string",
+          "maxLength": 4000
+        },
+        "maxItems": 100
       },
       "GlobalEvent": {
         "type": "object",
@@ -20226,7 +20228,8 @@
                         "type": "array",
                         "items": {
                           "$ref": "#/components/schemas/QuestionAnswer"
-                        }
+                        },
+                        "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
                       }
                     },
                     "required": ["id", "sessionID", "questions"],
@@ -22940,7 +22943,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/QuestionAnswer"
-            }
+            },
+            "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
           }
         },
         "required": ["id", "sessionID", "questions"],
@@ -33403,7 +33407,8 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/QuestionAnswer"
-                }
+                },
+                "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
               }
             },
             "required": ["id", "sessionID", "questions"],
@@ -36521,7 +36526,8 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/QuestionAnswer"
-                }
+                },
+                "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
               }
             },
             "required": ["id", "sessionID", "questions"],

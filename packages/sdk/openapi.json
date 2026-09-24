@@ -17476,6 +17476,13 @@
           },
           "custom": {
             "type": "boolean"
+          },
+          "recommended": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recommended label(s) at ask time; absent when none was recorded for this question"
           }
         },
         "required": ["question", "header", "options"],

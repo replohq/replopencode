@@ -718,6 +718,10 @@ export type QuestionInfo = {
   options: Array<QuestionOption>
   multiple?: boolean
   custom?: boolean
+  /**
+   * Recommended label(s) at ask time; absent when none was recorded for this question
+   */
+  recommended?: Array<string>
 }
 
 export type QuestionTool = {

@@ -30,11 +30,34 @@ const base = {
   multiple: Schema.optional(Schema.Boolean).annotate({ description: "Allow selecting multiple choices" }),
 }
 
+const recommendedDescription =
+  "Exact label(s) of the option(s) you would pick yourself; empty only when the choice is the user's alone"
+
 export const Info = Schema.Struct({
   ...base,
   custom: Schema.optional(Schema.Boolean).annotate({ description: "Allow typing a custom answer (default: true)" }),
+  // Optional here: questions asked before the tool required a recommendation are still stored and served.
+  recommended: Schema.optional(Schema.Array(Schema.String).annotate({ description: recommendedDescription })),
 }).annotate({ identifier: "QuestionInfo" })
-export const Prompt = Schema.Struct(base).annotate({ identifier: "QuestionPrompt" })
+// The tool requires a recommendation, so the model always decides; an empty list is its explicit "the user decides".
+export const Prompt = Schema.Struct({
+  ...base,
+  recommended: Schema.Array(Schema.String).annotate({ description: recommendedDescription }),
+})
+  .check(
+    Schema.makeFilter((question) => {
+      const labels = question.options.map((option) => option.label)
+      const unknown = question.recommended.find((label) => !labels.includes(label))
+      if (unknown !== undefined) {
+        return `recommended "${unknown}" is not an option label (options: ${labels.map((label) => `"${label}"`).join(", ")})`
+      }
+      if (!question.multiple && question.recommended.length > 1) {
+        return "recommend at most one option unless multiple is true"
+      }
+      return undefined
+    }),
+  )
+  .annotate({ identifier: "QuestionPrompt" })
 export const Tool = Schema.Struct({ messageID: SessionV1.MessageID, callID: Schema.String }).annotate({
   identifier: "QuestionTool",
 })

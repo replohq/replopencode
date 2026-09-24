@@ -7,7 +7,7 @@ import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
 import { disposeAllInstances, provideInstance, seedSession, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
-import { SessionID } from "../../src/session/schema"
+import { MessageID, SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
@@ -41,6 +41,14 @@ const replyEffect = Effect.fn("QuestionTest.reply")(function* (input: {
 const rejectEffect = Effect.fn("QuestionTest.reject")(function* (id: QuestionID) {
   const question = yield* Question.Service
   yield* question.reject(id)
+})
+
+const saveProgressEffect = Effect.fn("QuestionTest.saveProgress")(function* (input: {
+  requestID: QuestionID
+  answers: ReadonlyArray<Question.Answer>
+}) {
+  const question = yield* Question.Service
+  yield* question.saveProgress(input)
 })
 
 afterEach(async () => {
@@ -405,6 +413,18 @@ lifecycle.live("questions stay isolated by directory", () =>
     expect(onePending[0].sessionID).toBe(SessionID.make("ses_one"))
     expect(twoPending[0].sessionID).toBe(SessionID.make("ses_two"))
 
+    // inProject scopes claim and saveProgress, so instance two cannot touch instance one's request.
+    const crossReject = yield* rejectEffect(onePending[0].id).pipe(provideInstance(two), Effect.exit)
+    expect(Exit.isFailure(crossReject)).toBe(true)
+    if (Exit.isFailure(crossReject)) expect(Cause.squash(crossReject.cause)).toBeInstanceOf(Question.NotFoundError)
+    const crossProgress = yield* saveProgressEffect({ requestID: onePending[0].id, answers: [["A"]] }).pipe(
+      provideInstance(two),
+      Effect.exit,
+    )
+    expect(Exit.isFailure(crossProgress)).toBe(true)
+    if (Exit.isFailure(crossProgress)) expect(Cause.squash(crossProgress.cause)).toBeInstanceOf(Question.NotFoundError)
+    expect((yield* listEffect.pipe(provideInstance(one)))[0]).not.toHaveProperty("progress")
+
     yield* rejectEffect(onePending[0].id).pipe(provideInstance(one))
     yield* rejectEffect(twoPending[0].id).pipe(provideInstance(two))
 
@@ -503,6 +523,7 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     }).pipe(provideInstance(dir), Effect.forkScoped)
 
     const pending = yield* waitForPending(1).pipe(provideInstance(dir))
+    yield* saveProgressEffect({ requestID: pending[0].id, answers: [["Yes"]] }).pipe(provideInstance(dir))
     yield* InstanceStore.Service.use((store) => store.reload({ directory: dir }))
     yield* Fiber.await(fiber)
 
@@ -511,6 +532,7 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     expect(survived[0].id).toBe(pending[0].id)
     expect(survived[0].sessionID).toBe(SessionID.make("ses_survive"))
     expect(survived[0].questions).toEqual(questions)
+    expect(survived[0].progress).toEqual([["Yes"]])
 
     const replied = yield* Effect.gen(function* () {
       const events = yield* EventV2Bridge.Service
@@ -529,4 +551,42 @@ lifecycle.live("request survives instance reload and reply heals it", () =>
     const after = yield* listEffect.pipe(provideInstance(dir))
     expect(after).toHaveLength(0)
   }),
+)
+
+// progress
+
+it.instance(
+  "saveProgress - lists partial answers, and fails once the question is answered",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_progress"),
+        questions: [
+          { question: "Which layout?", header: "Layout", options: [{ label: "Bold", description: "Big image" }] },
+          { question: "Which color?", header: "Color", options: [{ label: "Red", description: "Warm" }] },
+        ],
+        tool: { messageID: MessageID.make("msg_progress"), callID: "call_progress" },
+      }).pipe(Effect.forkScoped)
+      const [request] = yield* waitForPending(1)
+      // Clients that never save progress see exactly the payload they did before.
+      expect(request).not.toHaveProperty("progress")
+
+      yield* saveProgressEffect({ requestID: request.id, answers: [["Bold"], []] })
+      // The whole row survives a save; the tool part is what a reply after a restart completes.
+      expect(yield* listEffect).toEqual([{ ...request, progress: [["Bold"], []] }])
+
+      const tooMany = yield* saveProgressEffect({ requestID: request.id, answers: [["Bold"], ["Red"], ["More"]] }).pipe(
+        Effect.exit,
+      )
+      expect(Exit.isFailure(tooMany)).toBe(true)
+      if (Exit.isFailure(tooMany)) expect(Cause.squash(tooMany.cause)).toBeInstanceOf(Question.InvalidProgressError)
+      expect((yield* listEffect)[0]?.progress).toEqual([["Bold"], []])
+
+      yield* replyEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] })
+      expect(yield* Fiber.join(fiber)).toEqual([["Bold"], ["Red"]])
+      const exit = yield* saveProgressEffect({ requestID: request.id, answers: [["Bold"], ["Red"]] }).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.NotFoundError)
+    }),
+  { git: true },
 )

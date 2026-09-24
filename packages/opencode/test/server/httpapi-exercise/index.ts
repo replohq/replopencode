@@ -296,7 +296,23 @@ const scenarios: Scenario[] = [
       body: { reply: "once" },
     }))
     .json(404, object, "status"),
-  http.protected.get("/question", "question.list").json(200, array),
+  http.protected
+    .get("/question", "question.list")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Question list owner" })
+        const id = yield* ctx.question(session.id)
+        yield* ctx.questionProgress(id, [["Yes"]])
+        return id
+      }),
+    )
+    .json(200, (body, ctx) => {
+      array(body)
+      const listed = body.find((request) => isRecord(request) && request.id === ctx.state)
+      check(isRecord(listed) && Array.isArray(listed.questions), "GET /question should list the seeded request")
+      check(stable(listed.progress) === stable([["Yes"]]), "GET /question should carry saved progress")
+    }),
   http.protected
     .post("/question/{requestID}/reply", "question.reply.invalid")
     .at((ctx) => ({
@@ -313,6 +329,67 @@ const scenarios: Scenario[] = [
       body: { answers: [["Yes"]] },
     }))
     .json(404, object, "status"),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress.invalid")
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
+      headers: ctx.headers(),
+      body: { answers: "Yes" },
+    }))
+    .status(400),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress.missing")
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
+      headers: ctx.headers(),
+      body: { answers: [["Yes"]] },
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress.oversized")
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
+      headers: ctx.headers(),
+      body: { answers: [["y".repeat(4001)]] },
+    }))
+    .status(400),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress.toomany")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Question progress overflow" })
+        return yield* ctx.question(session.id)
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: ctx.state }),
+      headers: ctx.headers(),
+      body: { answers: [["Yes"], ["No"]] },
+    }))
+    .status(400),
+  http.protected
+    .put("/question/{requestID}/progress", "question.progress")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Question progress owner" })
+        return yield* ctx.question(session.id)
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/question/{requestID}/progress", { requestID: ctx.state }),
+      headers: ctx.headers(),
+      body: { answers: [["Yes"]] },
+    }))
+    .jsonEffect(200, (body, ctx) =>
+      Effect.gen(function* () {
+        check(body === true, "question progress should return true")
+        const saved = (yield* ctx.questions()).find((request) => request.id === ctx.state)
+        check(stable(saved?.progress) === stable([["Yes"]]), "saved progress should be listed with its question")
+        check(Array.isArray(saved?.questions), "saved progress should keep the questions on the row")
+      }),
+    ),
   http.protected
     .post("/question/{requestID}/reject", "question.reject")
     .at((ctx) => ({

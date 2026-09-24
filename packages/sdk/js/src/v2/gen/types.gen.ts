@@ -1516,6 +1516,10 @@ export type GlobalEvent = {
            */
           questions: Array<QuestionInfo>
           tool?: QuestionTool
+          /**
+           * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+           */
+          progress?: Array<QuestionAnswer>
         }
       }
     | {
@@ -1746,6 +1750,7 @@ export type ProviderConfig = {
     baseURL?: string
     enterpriseUrl?: string
     setCacheKey?: boolean
+    promptCacheKey?: string
     /**
      * Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.
      */
@@ -2460,6 +2465,10 @@ export type QuestionRequest = {
    */
   questions: Array<QuestionInfo>
   tool?: QuestionTool
+  /**
+   * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+   */
+  progress?: Array<QuestionAnswer>
 }
 
 export type QuestionNotFoundError = {
@@ -5950,6 +5959,10 @@ export type QuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+     */
+    progress?: Array<QuestionAnswer>
   }
 }
 
@@ -6959,6 +6972,10 @@ export type EventQuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list.
+     */
+    progress?: Array<QuestionAnswer>
   }
 }
 
@@ -9201,6 +9218,45 @@ export type QuestionReplyResponses = {
 }
 
 export type QuestionReplyResponse = QuestionReplyResponses[keyof QuestionReplyResponses]
+
+export type QuestionProgressData = {
+  body?: {
+    /**
+     * User answers in order of questions (each answer is an array of selected labels)
+     */
+    answers: Array<QuestionAnswer>
+  }
+  path: {
+    requestID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/question/{requestID}/progress"
+}
+
+export type QuestionProgressErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * QuestionNotFoundError
+   */
+  404: QuestionNotFoundError
+}
+
+export type QuestionProgressError = QuestionProgressErrors[keyof QuestionProgressErrors]
+
+export type QuestionProgressResponses = {
+  /**
+   * Progress saved successfully
+   */
+  200: boolean
+}
+
+export type QuestionProgressResponse = QuestionProgressResponses[keyof QuestionProgressResponses]
 
 export type QuestionRejectData = {
   body?: never

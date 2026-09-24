@@ -4728,6 +4728,107 @@
         ]
       }
     },
+    "/question/{requestID}/progress": {
+      "put": {
+        "tags": ["question"],
+        "operationId": "question.progress",
+        "parameters": [
+          {
+            "name": "requestID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^que"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Progress saved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean",
+                  "description": "Progress saved successfully"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "QuestionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionNotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Replace the answers saved so far without replying; read them back from the list route as `progress`. Fails with 400 when more answers than questions are sent, and 404 once the question was replied to or rejected.",
+        "summary": "Save question progress",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "answers": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/QuestionAnswer"
+                    },
+                    "description": "User answers in order of questions (each answer is an array of selected labels)"
+                  }
+                },
+                "required": ["answers"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.question.progress({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/question/{requestID}/reject": {
       "post": {
         "tags": ["question"],
@@ -17397,8 +17498,10 @@
       "QuestionAnswer": {
         "type": "array",
         "items": {
-          "type": "string"
-        }
+          "type": "string",
+          "maxLength": 4000
+        },
+        "maxItems": 100
       },
       "GlobalEvent": {
         "type": "object",
@@ -20120,6 +20223,13 @@
                       },
                       "tool": {
                         "$ref": "#/components/schemas/QuestionTool"
+                      },
+                      "progress": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/QuestionAnswer"
+                        },
+                        "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
                       }
                     },
                     "required": ["id", "sessionID", "questions"],
@@ -20755,6 +20865,9 @@
               },
               "setCacheKey": {
                 "type": "boolean"
+              },
+              "promptCacheKey": {
+                "type": "string"
               },
               "timeout": {
                 "anyOf": [
@@ -22825,6 +22938,13 @@
           },
           "tool": {
             "$ref": "#/components/schemas/QuestionTool"
+          },
+          "progress": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionAnswer"
+            },
+            "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
           }
         },
         "required": ["id", "sessionID", "questions"],
@@ -33282,6 +33402,13 @@
               },
               "tool": {
                 "$ref": "#/components/schemas/QuestionTool"
+              },
+              "progress": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QuestionAnswer"
+                },
+                "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
               }
             },
             "required": ["id", "sessionID", "questions"],
@@ -36394,6 +36521,13 @@
               },
               "tool": {
                 "$ref": "#/components/schemas/QuestionTool"
+              },
+              "progress": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/QuestionAnswer"
+                },
+                "description": "Answers saved so far, in question order; may be shorter than questions. A missing or empty entry is a question not answered yet. Absent until a client saves; each save replaces the whole list."
               }
             },
             "required": ["id", "sessionID", "questions"],

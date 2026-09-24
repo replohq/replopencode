@@ -186,7 +186,7 @@ function withContext<A, E>(
                 const { db } = yield* modules.Database.Service
                 const id = QuestionID.ascending()
                 const questions = [
-                  { question: "Ship it?", header: "Ship", options: [{ label: "Yes", description: "Ship" }] },
+                  { question: "Ship it?", header: "Ship", options: [{ label: "Yes", description: "Ship", recommended: true }] },
                 ]
                 yield* db
                   .insert(modules.QuestionRequestTable)

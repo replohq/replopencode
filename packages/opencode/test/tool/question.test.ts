@@ -71,6 +71,27 @@ describe("tool.question", () => {
     }),
   )
 
+  it.instance("keeps the recommended flag on the asked question", () =>
+    Effect.gen(function* () {
+      yield* seedSession(ctx.sessionID)
+      const question = yield* Question.Service
+      const toolInfo = yield* QuestionTool
+      const tool = yield* toolInfo.init()
+      const options = [
+        { label: "Red", description: "The color of passion" },
+        { label: "Blue", description: "The color of sky", recommended: true },
+      ]
+
+      const fiber = yield* tool
+        .execute({ questions: [{ question: "Pick a color", header: "Color", options }] }, ctx)
+        .pipe(Effect.forkScoped)
+      const item = yield* pending(question)
+      expect(item.questions[0]?.options).toEqual(options)
+      yield* question.reply({ requestID: item.id, answers: [["Blue"]] })
+      yield* Fiber.join(fiber)
+    }),
+  )
+
   it.instance("should now pass with a header longer than 12 but less than 30 chars", () =>
     Effect.gen(function* () {
       yield* seedSession(ctx.sessionID)

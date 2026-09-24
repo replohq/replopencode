@@ -15,6 +15,11 @@ export const ID = Schema.String.check(Schema.isStartsWith("que")).pipe(
 export const Option = Schema.Struct({
   label: Schema.String.annotate({ description: "Display text (1-5 words, concise)" }),
   description: Schema.String.annotate({ description: "Explanation of choice" }),
+  recommended: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "True on the option you would pick yourself; it may be used for the user if they do not answer in time",
+    }),
+  ),
 }).annotate({ identifier: "QuestionOption" })
 
 // Bounded so one reply or saved progress cannot bloat the question row that every list reader parses;

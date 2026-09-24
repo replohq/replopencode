@@ -312,6 +312,11 @@ const scenarios: Scenario[] = [
       const listed = body.find((request) => isRecord(request) && request.id === ctx.state)
       check(isRecord(listed) && Array.isArray(listed.questions), "GET /question should list the seeded request")
       check(stable(listed.progress) === stable([["Yes"]]), "GET /question should carry saved progress")
+      const [first] = listed.questions
+      check(
+        isRecord(first) && Array.isArray(first.options) && isRecord(first.options[0]) && first.options[0].recommended === true,
+        "GET /question should carry the recommended flag",
+      )
     }),
   http.protected
     .post("/question/{requestID}/reply", "question.reply.invalid")

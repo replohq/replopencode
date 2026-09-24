@@ -38,6 +38,8 @@ export const PlanExitTool = Tool.define(
                   { label: "Yes", description: "Switch to build agent and start implementing the plan" },
                   { label: "No", description: "Stay with plan agent to continue refining the plan" },
                 ],
+                // Staying in plan mode is trivially reversible; starting to implement is not.
+                recommended: ["No"],
               },
             ],
             tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,

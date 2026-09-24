@@ -36,8 +36,14 @@ const recommendedDescription =
 export const Info = Schema.Struct({
   ...base,
   custom: Schema.optional(Schema.Boolean).annotate({ description: "Allow typing a custom answer (default: true)" }),
-  // Optional here: questions asked before the tool required a recommendation are still stored and served.
-  recommended: Schema.optional(Schema.Array(Schema.String).annotate({ description: recommendedDescription })),
+  // Optional here: some system-generated questions (e.g. plan_exit's) are built by hand rather than
+  // through the tool's validated Prompt schema, and questions asked before the tool required a
+  // recommendation are still stored and served. Absent does not mean "no recommendation was intended".
+  recommended: Schema.optional(
+    Schema.Array(Schema.String).annotate({
+      description: "Recommended label(s) at ask time; absent when none was recorded for this question",
+    }),
+  ),
 }).annotate({ identifier: "QuestionInfo" })
 // The tool requires a recommendation, so the model always decides; an empty list is its explicit "the user decides".
 export const Prompt = Schema.Struct({

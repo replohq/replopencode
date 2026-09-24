@@ -719,7 +719,7 @@ export type QuestionInfo = {
   multiple?: boolean
   custom?: boolean
   /**
-   * Exact label(s) of the option(s) you would pick yourself; empty only when the choice is the user's alone
+   * Recommended label(s) at ask time; absent when none was recorded for this question
    */
   recommended?: Array<string>
 }

@@ -130,7 +130,11 @@ describe("tool.question", () => {
       yield* seedSession(ctx.sessionID)
       const base = { question: "Pick a color", header: "Color", options: colors }
 
-      expect(yield* rejection([base])).toContain("recommended")
+      // Two substrings, not one: a coincidental match on "recommended" alone (e.g. from a property-access
+      // crash like `question.recommended.find`) would pass without the field actually being required.
+      const missing = yield* rejection([base])
+      expect(missing).toContain("Missing key")
+      expect(missing).toContain("recommended")
       expect(yield* rejection([{ ...base, recommended: ["Green"] }])).toContain('"Green" is not an option label')
       expect(yield* rejection([{ ...base, recommended: ["Red", "Blue"] }])).toContain("at most one option")
     }),

@@ -19,7 +19,7 @@ export const Option = Schema.Struct({
 
 // Bounded so one reply or saved progress cannot bloat the question row that every list reader parses;
 // the caps sit far above real answers (typed text, or every option of one question).
-export const Answer = Schema.Array(Schema.String.check(Schema.isMaxLength(4000)))
+export const Answer = Schema.Array(Schema.String.check(Schema.isMaxLength(16000)))
   .check(Schema.isMaxLength(100))
   .annotate({ identifier: "QuestionAnswer" })
 

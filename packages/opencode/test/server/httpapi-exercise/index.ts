@@ -350,7 +350,7 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({
       path: route("/question/{requestID}/progress", { requestID: "que_httpapi_progress" }),
       headers: ctx.headers(),
-      body: { answers: [["y".repeat(4001)]] },
+      body: { answers: [["y".repeat(16001)]] },
     }))
     .status(400),
   http.protected

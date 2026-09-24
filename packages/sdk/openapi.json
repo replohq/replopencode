@@ -17499,7 +17499,7 @@
         "type": "array",
         "items": {
           "type": "string",
-          "maxLength": 4000
+          "maxLength": 16000
         },
         "maxItems": 100
       },

@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
-import { Cause, Effect, Exit, Fiber, Queue } from "effect"
+import { Effect, Fiber, Queue } from "effect"
 import { QuestionTool } from "../../src/tool/question"
 import { Question } from "../../src/question"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -43,19 +43,6 @@ const pending = Effect.fn("QuestionToolTest.pending")(function* (question: Quest
   }
 })
 
-const colors = [
-  { label: "Red", description: "The color of passion" },
-  { label: "Blue", description: "The color of sky" },
-]
-
-const rejection = Effect.fn("QuestionToolTest.rejection")(function* (questions: unknown) {
-  const toolInfo = yield* QuestionTool
-  const tool = yield* toolInfo.init()
-  const exit = yield* tool.execute({ questions } as never, ctx).pipe(Effect.exit)
-  expect(Exit.isFailure(exit)).toBe(true)
-  return Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : ""
-})
-
 describe("tool.question", () => {
   it.instance("should successfully execute with valid question parameters", () =>
     Effect.gen(function* () {
@@ -72,7 +59,6 @@ describe("tool.question", () => {
             { label: "Blue", description: "The color of sky" },
           ],
           multiple: false,
-          recommended: ["Blue"],
         },
       ]
 
@@ -96,7 +82,6 @@ describe("tool.question", () => {
           question: "What is your favorite animal?",
           header: "This Header is Over 12",
           options: [{ label: "Dog", description: "Man's best friend" }],
-          recommended: ["Dog"],
         },
       ]
 
@@ -106,38 +91,6 @@ describe("tool.question", () => {
 
       const result = yield* Fiber.join(fiber)
       expect(result.output).toContain(`"What is your favorite animal?"="Dog"`)
-    }),
-  )
-
-  it.instance("keeps the recommendation on the asked question", () =>
-    Effect.gen(function* () {
-      yield* seedSession(ctx.sessionID)
-      const question = yield* Question.Service
-      const toolInfo = yield* QuestionTool
-      const tool = yield* toolInfo.init()
-      const questions = [{ question: "Pick a color", header: "Color", options: colors, recommended: ["Blue"] }]
-
-      const fiber = yield* tool.execute({ questions }, ctx).pipe(Effect.forkScoped)
-      const item = yield* pending(question)
-      expect(item.questions[0]?.recommended).toEqual(["Blue"])
-      yield* question.reply({ requestID: item.id, answers: [["Blue"]] })
-      yield* Fiber.join(fiber)
-    }),
-  )
-
-  it.instance("sends the model back when a recommendation is missing or wrong", () =>
-    Effect.gen(function* () {
-      yield* seedSession(ctx.sessionID)
-      const base = { question: "Pick a color", header: "Color", options: colors }
-
-      // Two substrings, not one: a coincidental match on "recommended" alone (e.g. from a property-access
-      // crash like `question.recommended.find`) would pass without the field actually being required.
-      const missing = yield* rejection([base])
-      expect(missing).toContain("Missing key")
-      expect(missing).toContain("recommended")
-      expect(yield* rejection([{ ...base, recommended: [] }])).toContain("at least one option")
-      expect(yield* rejection([{ ...base, recommended: ["Green"] }])).toContain('"Green" is not an option label')
-      expect(yield* rejection([{ ...base, recommended: ["Red", "Blue"] }])).toContain("at most one option")
     }),
   )
 

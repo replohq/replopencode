@@ -7,4 +7,4 @@ Use this tool when you need to ask the user questions during execution. This all
 Usage notes:
 - When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
-- Every question needs `recommended` with at least one label: the exact label of the option you would pick (every label you would pick when `multiple` is true). Always pick, even when the choice is a matter of taste or the user's alone: recommend the option that is easiest to change later, because it is used for the user if they do not answer in time. Keep "(Recommended)" out of labels
+- Put the option you would pick first: when nobody answers in time, Replo goes with the first option of each step (a free-text step is skipped). Keep "(Recommended)" out of labels

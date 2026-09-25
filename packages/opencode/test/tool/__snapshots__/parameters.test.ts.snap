@@ -235,19 +235,11 @@ exports[`tool parameters JSON Schema (wire shape) question 1`] = `
             "description": "Complete question",
             "type": "string",
           },
-          "recommended": {
-            "description": "Exact label(s) of the option(s) you would pick yourself; at least one, even when the choice is a matter of taste",
-            "items": {
-              "type": "string",
-            },
-            "type": "array",
-          },
         },
         "required": [
           "question",
           "header",
           "options",
-          "recommended",
         ],
         "type": "object",
       },

@@ -30,40 +30,11 @@ const base = {
   multiple: Schema.optional(Schema.Boolean).annotate({ description: "Allow selecting multiple choices" }),
 }
 
-const recommendedDescription =
-  "Exact label(s) of the option(s) you would pick yourself; empty when you have no genuine preference or the choice is the user's alone"
-
 export const Info = Schema.Struct({
   ...base,
   custom: Schema.optional(Schema.Boolean).annotate({ description: "Allow typing a custom answer (default: true)" }),
-  // Optional here: some system-generated questions (e.g. plan_exit's) are built by hand rather than
-  // through the tool's validated Prompt schema, and questions asked before the tool required a
-  // recommendation are still stored and served. Absent does not mean "no recommendation was intended".
-  recommended: Schema.optional(
-    Schema.Array(Schema.String).annotate({
-      description: "Recommended label(s) at ask time; absent when none was recorded for this question",
-    }),
-  ),
 }).annotate({ identifier: "QuestionInfo" })
-// The tool requires a recommendation, so the model always decides; an empty list means no genuine preference or "the user decides".
-export const Prompt = Schema.Struct({
-  ...base,
-  recommended: Schema.Array(Schema.String).annotate({ description: recommendedDescription }),
-})
-  .check(
-    Schema.makeFilter((question) => {
-      const labels = question.options.map((option) => option.label)
-      const unknown = question.recommended.find((label) => !labels.includes(label))
-      if (unknown !== undefined) {
-        return `recommended "${unknown}" is not an option label (options: ${labels.map((label) => `"${label}"`).join(", ")})`
-      }
-      if (!question.multiple && question.recommended.length > 1) {
-        return "recommend at most one option unless multiple is true"
-      }
-      return undefined
-    }),
-  )
-  .annotate({ identifier: "QuestionPrompt" })
+export const Prompt = Schema.Struct(base).annotate({ identifier: "QuestionPrompt" })
 export const Tool = Schema.Struct({ messageID: SessionV1.MessageID, callID: Schema.String }).annotate({
   identifier: "QuestionTool",
 })

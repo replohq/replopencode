@@ -204,7 +204,6 @@ describe("tool parameters", () => {
             header: "Header",
             custom: false,
             options: [{ label: "a", description: "desc" }],
-            recommended: ["a"],
           },
         ],
       })
@@ -212,13 +211,6 @@ describe("tool parameters", () => {
     })
     test("rejects missing questions", () => {
       expect(accepts(Question, {})).toBe(false)
-    })
-    test("rejects a question without a recommendation", () => {
-      expect(
-        accepts(Question, {
-          questions: [{ question: "pick one", header: "Header", options: [{ label: "a", description: "desc" }] }],
-        }),
-      ).toBe(false)
     })
   })
 

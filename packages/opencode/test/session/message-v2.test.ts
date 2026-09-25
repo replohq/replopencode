@@ -1399,6 +1399,24 @@ describe("session.message-v2.fromError", () => {
     })
   })
 
+  test("serializes OpenRouter typeless 5xx chunks as retryable APIError", () => {
+    const input = {
+      code: 502,
+      message: "Stream ended before a terminal response event",
+      metadata: { error_type: "provider_unavailable" },
+    }
+    const result = MessageV2.fromError(input, { providerID })
+
+    expect(result).toStrictEqual({
+      name: "APIError",
+      data: {
+        message: input.message,
+        isRetryable: true,
+        responseBody: JSON.stringify(input),
+      },
+    })
+  })
+
   test("serializes response error codes", () => {
     const cases = [
       {

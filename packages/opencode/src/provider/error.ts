@@ -99,7 +99,7 @@ export type ParsedStreamError =
       responseBody: string
     }
 
-// OpenRouter relays upstream overflow as a typeless `{ code: 502, message }` chunk.
+// OpenRouter relays upstream failures as typeless `{ code: 5xx, message }` chunks.
 function isOverflow(body: { error?: { code?: string; message?: string }; message?: string }) {
   return body.error?.code === "context_length_exceeded" || isContextOverflow(body.error?.message ?? body.message ?? "")
 }
@@ -114,6 +114,14 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
     return {
       type: "context_overflow",
       message: "Input exceeds context window of this model",
+      responseBody,
+    }
+  }
+  if (typeof body.code === "number" && body.code >= 500) {
+    return {
+      type: "api_error",
+      message: typeof body.message === "string" ? body.message : "Server error.",
+      isRetryable: true,
       responseBody,
     }
   }

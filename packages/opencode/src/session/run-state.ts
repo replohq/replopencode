@@ -5,16 +5,22 @@ import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
 import { Effect, Latch, Layer, Scope, Context } from "effect"
 import { Session } from "./session"
-import { SessionID } from "./schema"
+import { MessageID, SessionID } from "./schema"
 import { SessionStatus } from "./status"
 
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly registerPrompt: (input: {
+    sessionId: SessionID
+    messageId: MessageID
+  }) => Effect.Effect<{ readonly cancelled: boolean }>
+  readonly cancelPrompt: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<boolean>
   readonly ensureRunning: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    canRun?: () => boolean,
   ) => Effect.Effect<SessionV1.WithParts>
   readonly startShell: (
     sessionID: SessionID,
@@ -36,6 +42,7 @@ const layer = Layer.effect(
       Effect.fn("SessionRunState.state")(function* () {
         const scope = yield* Scope.Scope
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
+        const prompts = new Map<SessionID, { messageId: MessageID; cancelled: boolean }>()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
             yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
@@ -45,7 +52,7 @@ const layer = Layer.effect(
             runners.clear()
           }),
         )
-        return { runners, scope }
+        return { runners, prompts, scope }
       }),
     )
 
@@ -85,12 +92,50 @@ const layer = Layer.effect(
       yield* existing.cancel
     })
 
+    const registerPrompt = Effect.fn("SessionRunState.registerPrompt")(function* (input: {
+      sessionId: SessionID
+      messageId: MessageID
+    }) {
+      const data = yield* InstanceState.get(state)
+      const prompt = { messageId: input.messageId, cancelled: false }
+      data.prompts.set(input.sessionId, prompt)
+      return prompt
+    })
+
+    const cancelPrompt = Effect.fn("SessionRunState.cancelPrompt")(function* (input: {
+      sessionId: SessionID
+      messageId: MessageID
+    }) {
+      const data = yield* InstanceState.get(state)
+      const claim = () => {
+        const prompt = data.prompts.get(input.sessionId)
+        if (!prompt || prompt.messageId !== input.messageId || prompt.cancelled) return false
+        prompt.cancelled = true
+        return true
+      }
+      const active = data.runners.get(input.sessionId)
+      // The runner checks ownership while detaching the exact fiber it will interrupt.
+      const cancelled = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
+      if (cancelled) {
+        yield* status.clearIf(input.sessionId, () => {
+          const current = data.prompts.get(input.sessionId)
+          return current?.messageId === input.messageId && current.cancelled && !data.runners.get(input.sessionId)?.busy
+        })
+      }
+      return cancelled
+    })
+
     const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      canRun?: () => boolean,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      const data = yield* InstanceState.get(state)
+      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(
+        work,
+        canRun ?? (() => !data.prompts.get(sessionID)?.cancelled),
+      )
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -104,7 +149,7 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-    return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
+    return Service.of({ assertNotBusy, cancel, registerPrompt, cancelPrompt, ensureRunning, startShell })
   }),
 )
 

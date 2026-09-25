@@ -1254,6 +1254,54 @@ it.instance("cancel interrupts loop and resolves with an assistant message", () 
   }),
 )
 
+it.instance("prompt cancellation cannot interrupt a replacement prompt", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const state = yield* SessionRunState.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({})
+    const events = yield* EventV2Bridge.Service
+    const seen: string[] = []
+    const off = yield* events.listen((event) => {
+      seen.push(event.type)
+      return Effect.void
+    })
+    const firstId = MessageID.ascending()
+    const secondId = MessageID.ascending()
+    yield* llm.hang
+    const first = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        messageID: firstId,
+        agent: "build",
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
+    expect(Exit.isSuccess(yield* Fiber.await(first))).toBe(true)
+    expect((yield* status.get(chat.id)).type).toBe("idle")
+    expect(seen).not.toContain(Session.Event.Error.type)
+    expect(seen).not.toContain(SessionStatus.Event.Idle.type)
+    const second = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        messageID: secondId,
+        agent: "build",
+        parts: [{ type: "text", text: "second" }],
+      })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(2)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(false)
+    expect((yield* status.get(chat.id)).type).toBe("busy")
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+    expect(Exit.isSuccess(yield* Fiber.await(second))).toBe(true)
+    yield* off
+  }),
+)
+
 it.instance("cancel records MessageAbortedError on interrupted process", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

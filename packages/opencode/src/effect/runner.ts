@@ -3,9 +3,10 @@ import { Cause, Deferred, Effect, Exit, Fiber, Latch, Schema, Scope, Synchronize
 export interface Runner<A, E = never> {
   readonly state: State<A, E>
   readonly busy: boolean
-  readonly ensureRunning: (work: Effect.Effect<A, E>) => Effect.Effect<A, E>
+  readonly ensureRunning: (work: Effect.Effect<A, E>, canRun?: () => boolean) => Effect.Effect<A, E>
   readonly startShell: (work: Effect.Effect<A, E>, ready?: Latch.Latch) => Effect.Effect<A, E | Busy>
   readonly cancel: Effect.Effect<void>
+  readonly cancelIf: (predicate: () => boolean, options?: { notifyIdle?: boolean }) => Effect.Effect<boolean>
 }
 
 export class Cancelled extends Schema.TaggedErrorClass<Cancelled>()("RunnerCancelled", {}) {}
@@ -112,10 +113,11 @@ export const make = <A, E = never>(
       yield* Fiber.interrupt(shell.fiber)
     })
 
-  const ensureRunning = (work: Effect.Effect<A, E>) =>
+  const ensureRunning = (work: Effect.Effect<A, E>, canRun = () => true) =>
     SynchronizedRef.modifyEffect(
       ref,
       Effect.fnUntraced(function* (st) {
+        if (!canRun()) return [onInterrupt ?? Effect.die(new Cancelled()), st] as const
         switch (st._tag) {
           case "Running":
           case "ShellThenRun":
@@ -168,38 +170,43 @@ export const make = <A, E = never>(
       }),
     ).pipe(Effect.flatten)
 
-  const cancel = SynchronizedRef.modify(ref, (st) => {
-    switch (st._tag) {
-      case "Idle":
-        return [Effect.void, st] as const
-      case "Running":
-        return [
-          Effect.gen(function* () {
-            yield* Fiber.interrupt(st.run.fiber)
-            yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-      case "Shell":
-        return [
-          Effect.gen(function* () {
-            yield* stopShell(st.shell)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-      case "ShellThenRun":
-        return [
-          Effect.gen(function* () {
-            yield* stopShell(st.shell)
-            yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-    }
-  }).pipe(Effect.flatten)
+  const cancelIf = (predicate: () => boolean, options?: { notifyIdle?: boolean }) =>
+    SynchronizedRef.modify(ref, (st) => {
+      if (!predicate()) return [Effect.succeed(false), st] as const
+      const stopped = (() => {
+        switch (st._tag) {
+          case "Idle":
+            return [Effect.void, st] as const
+          case "Running":
+            return [
+              Effect.gen(function* () {
+                yield* Fiber.interrupt(st.run.fiber)
+                yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
+                if (options?.notifyIdle !== false) yield* idleIfCurrent()
+              }),
+              { _tag: "Idle" } as const,
+            ] as const
+          case "Shell":
+            return [
+              Effect.gen(function* () {
+                yield* stopShell(st.shell)
+                if (options?.notifyIdle !== false) yield* idleIfCurrent()
+              }),
+              { _tag: "Idle" } as const,
+            ] as const
+          case "ShellThenRun":
+            return [
+              Effect.gen(function* () {
+                yield* stopShell(st.shell)
+                yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
+                if (options?.notifyIdle !== false) yield* idleIfCurrent()
+              }),
+              { _tag: "Idle" } as const,
+            ] as const
+        }
+      })()
+      return [stopped[0].pipe(Effect.as(true)), stopped[1]] as const
+    }).pipe(Effect.flatten)
 
   return {
     get state() {
@@ -210,7 +217,8 @@ export const make = <A, E = never>(
     },
     ensureRunning,
     startShell,
-    cancel,
+    cancel: cancelIf(() => true).pipe(Effect.asVoid),
+    cancelIf,
   }
 }
 

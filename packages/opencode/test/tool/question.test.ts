@@ -96,7 +96,7 @@ describe("tool.question", () => {
           question: "What is your favorite animal?",
           header: "This Header is Over 12",
           options: [{ label: "Dog", description: "Man's best friend" }],
-          recommended: ["Dog"],
+          recommended: [],
         },
       ]
 
@@ -135,7 +135,6 @@ describe("tool.question", () => {
       const missing = yield* rejection([base])
       expect(missing).toContain("Missing key")
       expect(missing).toContain("recommended")
-      expect(yield* rejection([{ ...base, recommended: [] }])).toContain("at least one option")
       expect(yield* rejection([{ ...base, recommended: ["Green"] }])).toContain('"Green" is not an option label')
       expect(yield* rejection([{ ...base, recommended: ["Red", "Blue"] }])).toContain("at most one option")
     }),

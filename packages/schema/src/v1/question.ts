@@ -31,7 +31,7 @@ const base = {
 }
 
 const recommendedDescription =
-  "Exact label(s) of the option(s) you would pick yourself; at least one, even when the choice is a matter of taste"
+  "Exact label(s) of the option(s) you would pick yourself; empty when you have no genuine preference or the choice is the user's alone"
 
 export const Info = Schema.Struct({
   ...base,
@@ -45,16 +45,13 @@ export const Info = Schema.Struct({
     }),
   ),
 }).annotate({ identifier: "QuestionInfo" })
-// The tool requires at least one recommendation, so every question carries a pick a timer can use when nobody answers.
+// The tool requires a recommendation, so the model always decides; an empty list means no genuine preference or "the user decides".
 export const Prompt = Schema.Struct({
   ...base,
   recommended: Schema.Array(Schema.String).annotate({ description: recommendedDescription }),
 })
   .check(
     Schema.makeFilter((question) => {
-      if (question.recommended.length === 0) {
-        return "recommend at least one option"
-      }
       const labels = question.options.map((option) => option.label)
       const unknown = question.recommended.find((label) => !labels.includes(label))
       if (unknown !== undefined) {

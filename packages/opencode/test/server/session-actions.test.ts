@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
+import { SessionRunState } from "@/session/run-state"
+import { MessageID } from "@/session/schema"
 import { Session as SessionNs } from "@/session/session"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
-const it = testEffect(Layer.mergeAll(LayerNode.compile(SessionNs.node), httpApiLayer))
+const it = testEffect(
+  Layer.mergeAll(LayerNode.compile(SessionNs.node), LayerNode.compile(SessionRunState.node), httpApiLayer),
+)
 
 afterEach(async () => {
   mock.restore()
@@ -108,3 +112,34 @@ describe("session action routes", () => {
     { git: true },
   )
 })
+
+it.instance(
+  "prompt abort refuses stale and repeated requests",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const sessions = yield* SessionNs.Service
+      const state = yield* SessionRunState.Service
+      const session = yield* sessions.create({})
+      const first = MessageID.ascending()
+      const second = MessageID.ascending()
+      yield* state.registerPrompt({ sessionId: session.id, messageId: first })
+      yield* state.registerPrompt({ sessionId: session.id, messageId: second })
+      const old = yield* requestInDirectory(`/session/${session.id}/prompt/${first}/abort`, test.directory, {
+        method: "POST",
+      })
+      expect(old.status).toBe(200)
+      expect(yield* old.json).toBe(false)
+      const current = yield* requestInDirectory(`/session/${session.id}/prompt/${second}/abort`, test.directory, {
+        method: "POST",
+      })
+      expect(current.status).toBe(200)
+      expect(yield* current.json).toBe(true)
+      const retry = yield* requestInDirectory(`/session/${session.id}/prompt/${second}/abort`, test.directory, {
+        method: "POST",
+      })
+      expect(yield* retry.json).toBe(false)
+      yield* sessions.remove(session.id)
+    }),
+  { git: true },
+)

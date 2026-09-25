@@ -424,6 +424,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("update", update)
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
+      .handle("abortPrompt", (ctx) =>
+        runState.cancelPrompt({ sessionId: ctx.params.sessionID, messageId: ctx.params.messageId }),
+      )
       .handle("init", init)
       .handle("share", share)
       .handle("unshare", unshare)

@@ -779,7 +779,8 @@ const layer = Layer.effect(
               Effect.gen(function* () {
                 aborted = true
                 if (!ctx.assistantMessage.error) {
-                  yield* halt(new DOMException("Aborted", "AbortError"))
+                  // The owning runner decides whether cancellation may publish session-wide idle.
+                  ctx.assistantMessage.error = parse(new DOMException("Aborted", "AbortError"))
                 }
               }),
             ),

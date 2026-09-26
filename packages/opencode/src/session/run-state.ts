@@ -24,7 +24,11 @@ export interface Interface {
     sessionID: SessionID,
     messages: SessionV1.WithParts[],
   ) => Effect.Effect<SessionV1.WithParts[]>
-  readonly startStep: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<void>
+  readonly startStep: (input: {
+    sessionId: SessionID
+    messageId: MessageID
+    messageIds: MessageID[]
+  }) => Effect.Effect<void>
   readonly cancelPrompt: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<boolean>
   readonly ensureRunning: (
     sessionID: SessionID,
@@ -60,6 +64,7 @@ const layer = Layer.effect(
           {
             messageId?: MessageID
             cancelled: Set<MessageID>
+            consumed: Set<MessageID>
             resume: (prompt: Prompt) => Effect.Effect<SessionV1.WithParts>
           }
         >()
@@ -89,10 +94,22 @@ const layer = Layer.effect(
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
           if (data.runners.get(sessionID) !== next || next.busy) return
+          const active = data.activePrompts.get(sessionID)
+          const queued = data.queuedPrompts.get(sessionID)
+          for (const id of active?.consumed ?? []) queued?.delete(id)
+          if (active?.messageId) queued?.delete(active.messageId)
+          const pending = [...(queued?.values() ?? [])].at(-1)
           data.runners.delete(sessionID)
           data.activePrompts.delete(sessionID)
-          data.queuedPrompts.delete(sessionID)
-          if (data.prompts.get(sessionID)?.queued) data.prompts.delete(sessionID)
+          if (!pending) data.queuedPrompts.delete(sessionID)
+          const latest = data.prompts.get(sessionID)
+          if (latest?.queued && queued?.get(latest.messageId) !== latest) data.prompts.delete(sessionID)
+          // Admission can happen after the final history snapshot but before the runner settles.
+          if (active && pending) {
+            yield* active.resume(pending).pipe(Effect.forkIn(data.scope))
+            yield* status.clearIf(sessionID, () => !data.runners.get(sessionID)?.busy)
+            return
+          }
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: status.set(sessionID, { type: "busy" }),
@@ -169,10 +186,14 @@ const layer = Layer.effect(
     const startStep = Effect.fn("SessionRunState.startStep")(function* (input: {
       sessionId: SessionID
       messageId: MessageID
+      messageIds: MessageID[]
     }) {
       const data = yield* InstanceState.get(state)
       const active = data.activePrompts.get(input.sessionId)
       if (!active) return
+      for (const id of input.messageIds) {
+        if (data.queuedPrompts.get(input.sessionId)?.has(id)) active.consumed.add(id)
+      }
       if (active.messageId && active.messageId !== input.messageId) {
         const queued = data.queuedPrompts.get(input.sessionId)
         queued?.delete(active.messageId)
@@ -204,7 +225,7 @@ const layer = Layer.effect(
           if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
           if (data.prompts.get(input.sessionId) === prompt) data.prompts.delete(input.sessionId)
         }
-        return running
+        return running && claimed
       }
       // Preparation and queued prompts can be cancelled without interrupting another prompt or a shell.
       const stopped = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
@@ -255,6 +276,7 @@ const layer = Layer.effect(
             data.activePrompts.set(sessionID, {
               messageId: ownership?.messageId,
               cancelled: ownership?.cancelledMessageIds ?? new Set(),
+              consumed: new Set(),
               resume: (next) => ensureRunning(sessionID, onInterrupt, work, next),
             })
           }

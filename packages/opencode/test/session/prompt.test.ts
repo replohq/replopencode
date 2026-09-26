@@ -3355,7 +3355,7 @@ for (const stop of [false, true]) {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const events = yield* EventV2Bridge.Service
-      const chat = yield* sessions.create({})
+      const chat = yield* sessions.create({ title: "Idle event" })
       const seen: string[] = []
       const off = yield* events.listen((event) => {
         seen.push(event.type)

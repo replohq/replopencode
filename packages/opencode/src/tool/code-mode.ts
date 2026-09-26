@@ -55,12 +55,17 @@ function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly 
   return groups
 }
 
-export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
+export function describeCatalog(
+  mcpTools: Record<string, MCP.McpTool>,
+  servers: readonly string[],
+  discovery?: CodeMode.DiscoveryOptions,
+): string {
   return CodeMode.make({
     tools: toolTree(
       [...groupByServer(mcpTools, servers).values()].flat(),
       () => () => Effect.fail(toolError("Tool preview is not executable.")),
     ),
+    discovery,
   }).instructions()
 }
 

@@ -1468,6 +1468,268 @@ it.instance("cancelled queued messages are skipped when the active prompt finish
   }),
 )
 
+it.instance("a preparing prompt does not hide an earlier queued prompt from cancellation", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const state = yield* SessionRunState.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({ title: "Three prompt ownership" })
+    const release = Promise.withResolvers<void>()
+    yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()))
+    yield* llm.push(reply().wait(release.promise).text("first finished").stop())
+    const firstId = MessageID.ascending()
+    const first = yield* prompt
+      .prompt({ sessionID: chat.id, messageID: firstId, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    const secondId = MessageID.ascending()
+    const message = yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: secondId,
+      noReply: true,
+      parts: [{ type: "text", text: "second" }],
+    })
+    const secondToken = yield* state.registerPrompt({ sessionId: chat.id, messageId: secondId })
+    const second = yield* state
+      .ensureRunning(chat.id, Effect.succeed(message), Effect.succeed(message), secondToken)
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      Effect.sync(() => (secondToken.queued ? true : undefined)),
+      "second prompt queued",
+    )
+    const thirdId = MessageID.ascending()
+    yield* state.registerPrompt({ sessionId: chat.id, messageId: thirdId })
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(false)
+    expect((yield* status.get(chat.id)).type).toBe("busy")
+    release.resolve()
+    const result = yield* Fiber.join(first)
+    yield* Fiber.join(second)
+    expect(result.info.role === "assistant" && result.info.parentID === firstId).toBe(true)
+    expect(yield* llm.calls).toBe(1)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(false)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: thirdId })).toBe(true)
+  }),
+)
+
+for (const cancelFirst of [false, true]) {
+  it.instance(
+    `a queued prompt survives newer preparation when the active prompt ${cancelFirst ? "is cancelled" : "finishes"}`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(providerCfg)
+        const prompt = yield* SessionPrompt.Service
+        const state = yield* SessionRunState.Service
+        const sessions = yield* Session.Service
+        const status = yield* SessionStatus.Service
+        const chat = yield* sessions.create({ title: "Queued handoff with preparation" })
+        const ensureRunning = spyOn(state, "ensureRunning")
+        yield* Effect.addFinalizer(() => Effect.sync(() => ensureRunning.mockRestore()))
+        const release = Promise.withResolvers<void>()
+        yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()))
+        yield* llm.push(reply().wait(release.promise).text("first finished").stop())
+        const firstId = MessageID.ascending()
+        const first = yield* prompt
+          .prompt({ sessionID: chat.id, messageID: firstId, parts: [{ type: "text", text: "first" }] })
+          .pipe(Effect.forkChild)
+        yield* llm.wait(1)
+        yield* llm.hang
+        const secondId = MessageID.ascending()
+        const second = yield* prompt
+          .prompt({ sessionID: chat.id, messageID: secondId, parts: [{ type: "text", text: "second" }] })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            ensureRunning.mock.calls.find((call) => call[3]?.messageId === secondId)?.[3]?.queued ? true : undefined,
+          ),
+          "second prompt queued",
+        )
+        const thirdId = MessageID.ascending()
+        yield* state.registerPrompt({ sessionId: chat.id, messageId: thirdId })
+        if (cancelFirst) expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
+        else release.resolve()
+        yield* llm.wait(2)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(false)
+        expect((yield* status.get(chat.id)).type).toBe("busy")
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+        yield* Fiber.join(first)
+        yield* Fiber.join(second)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: thirdId })).toBe(true)
+        expect(yield* llm.calls).toBe(2)
+      }),
+  )
+}
+
+for (const prepareThird of [false, true]) {
+  it.instance(
+    `cancelled queued input stays excluded when a ${prepareThird ? "preparing" : "queued"} successor starts after abort`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(providerCfg)
+        const prompt = yield* SessionPrompt.Service
+        const state = yield* SessionRunState.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Cancelled queue across restart" })
+        const ensureRunning = spyOn(state, "ensureRunning")
+        yield* Effect.addFinalizer(() => Effect.sync(() => ensureRunning.mockRestore()))
+        yield* llm.hang
+        const firstId = MessageID.ascending()
+        const first = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            messageID: firstId,
+            parts: [{ type: "text", text: "first-prompt-context-must-remain" }],
+          })
+          .pipe(Effect.forkChild)
+        yield* llm.wait(1)
+        const secondId = MessageID.ascending()
+        const second = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            messageID: secondId,
+            parts: [{ type: "text", text: "cancelled-prompt-must-not-reach-model" }],
+          })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            ensureRunning.mock.calls.find((call) => call[3]?.messageId === secondId)?.[3]?.queued ? true : undefined,
+          ),
+          "second prompt queued",
+        )
+        const thirdId = MessageID.ascending()
+        const thirdReady = yield* Deferred.make<void>()
+        const releaseThird = yield* Deferred.make<void>()
+        const registerPrompt = spyOn(state, "registerPrompt")
+        const register = registerPrompt.getMockImplementation()
+        if (!register) throw new Error("Missing register implementation")
+        registerPrompt.mockImplementation((input) =>
+          register(input).pipe(
+            Effect.tap(() =>
+              input.messageId === thirdId && prepareThird
+                ? Deferred.succeed(thirdReady, undefined).pipe(Effect.andThen(Deferred.await(releaseThird)))
+                : Effect.void,
+            ),
+          ),
+        )
+        yield* Effect.addFinalizer(() => Effect.sync(() => registerPrompt.mockRestore()))
+        yield* llm.hang
+        const third = yield* prompt
+          .prompt({ sessionID: chat.id, messageID: thirdId, parts: [{ type: "text", text: "third" }] })
+          .pipe(Effect.forkChild)
+        if (prepareThird) yield* Deferred.await(thirdReady)
+        else
+          yield* pollWithTimeout(
+            Effect.sync(() =>
+              ensureRunning.mock.calls.find((call) => call[3]?.messageId === thirdId)?.[3]?.queued ? true : undefined,
+            ),
+            "third prompt queued",
+          )
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
+        if (prepareThird) yield* Deferred.succeed(releaseThird, undefined)
+        yield* llm.wait(2)
+        const sent = JSON.stringify((yield* llm.inputs).at(-1))
+        expect(sent).toContain("third")
+        expect(sent.includes("first-prompt-context-must-remain")).toBe(true)
+        expect(sent.includes("cancelled-prompt-must-not-reach-model")).toBe(false)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: thirdId })).toBe(true)
+        yield* Fiber.join(first)
+        yield* Fiber.join(second)
+        yield* Fiber.join(third)
+      }),
+  )
+}
+
+it.instance("a superseded preparation cannot leak its persisted message into the active drain", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const state = yield* SessionRunState.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Superseded persisted preparation" })
+    const release = Promise.withResolvers<void>()
+    yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()))
+    yield* llm.push(reply().wait(release.promise).text("first finished").stop())
+    const firstId = MessageID.ascending()
+    const first = yield* prompt
+      .prompt({ sessionID: chat.id, messageID: firstId, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    const secondId = MessageID.ascending()
+    const secondToken = yield* state.registerPrompt({ sessionId: chat.id, messageId: secondId })
+    const secondMessage = yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: secondId,
+      noReply: true,
+      parts: [{ type: "text", text: "superseded preparation" }],
+    })
+    const thirdId = MessageID.ascending()
+    yield* state.registerPrompt({ sessionId: chat.id, messageId: thirdId })
+    const restarted = yield* Deferred.make<void>()
+    yield* state.ensureRunning(
+      chat.id,
+      Effect.succeed(secondMessage),
+      Deferred.succeed(restarted, undefined).pipe(Effect.as(secondMessage)),
+      secondToken,
+    )
+    expect(yield* Deferred.isDone(restarted)).toBe(false)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(false)
+    release.resolve()
+    const result = yield* Fiber.join(first)
+    expect(result.info.role === "assistant" && result.info.parentID === firstId).toBe(true)
+    expect(yield* llm.calls).toBe(1)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: thirdId })).toBe(true)
+  }),
+)
+
+it.instance("manual stop invalidates queued ownership hidden by newer preparation", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const state = yield* SessionRunState.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Stop all admitted prompts" })
+    yield* llm.hang
+    const first = yield* prompt
+      .prompt({ sessionID: chat.id, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    const secondId = MessageID.ascending()
+    const message = yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: secondId,
+      noReply: true,
+      parts: [{ type: "text", text: "second" }],
+    })
+    const secondToken = yield* state.registerPrompt({ sessionId: chat.id, messageId: secondId })
+    const second = yield* state
+      .ensureRunning(chat.id, Effect.succeed(message), Effect.succeed(message), secondToken)
+      .pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      Effect.sync(() => (secondToken.queued ? true : undefined)),
+      "second prompt queued",
+    )
+    const thirdToken = yield* state.registerPrompt({ sessionId: chat.id, messageId: MessageID.ascending() })
+    yield* state.cancel(chat.id)
+    yield* Fiber.join(first)
+    yield* Fiber.join(second)
+    expect(secondToken.cancelled).toBe(true)
+    expect(thirdToken.cancelled).toBe(true)
+    const restarted = yield* Deferred.make<void>()
+    yield* state.ensureRunning(
+      chat.id,
+      Effect.succeed(message),
+      Deferred.succeed(restarted, undefined).pipe(Effect.as(message)),
+      secondToken,
+    )
+    expect(yield* Deferred.isDone(restarted)).toBe(false)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(false)
+    expect(yield* llm.calls).toBe(1)
+  }),
+)
+
 it.instance("cancelling a queued prompt preserves the shell and skips its pending model work", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

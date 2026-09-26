@@ -12,6 +12,7 @@ interface Prompt {
   messageId: MessageID
   cancelled: boolean
   queued: boolean
+  cancelledMessageIds: Set<MessageID>
 }
 
 export interface Interface {
@@ -52,6 +53,8 @@ const layer = Layer.effect(
         const scope = yield* Scope.Scope
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
         const prompts = new Map<SessionID, Prompt>()
+        // Preparing input must not hide prompts already admitted to the runner.
+        const queuedPrompts = new Map<SessionID, Map<MessageID, Prompt>>()
         const activePrompts = new Map<
           SessionID,
           {
@@ -68,10 +71,11 @@ const layer = Layer.effect(
             })
             runners.clear()
             prompts.clear()
+            queuedPrompts.clear()
             activePrompts.clear()
           }),
         )
-        return { runners, prompts, activePrompts, scope }
+        return { runners, prompts, queuedPrompts, activePrompts, scope }
       }),
     )
 
@@ -87,6 +91,7 @@ const layer = Layer.effect(
           if (data.runners.get(sessionID) !== next || next.busy) return
           data.runners.delete(sessionID)
           data.activePrompts.delete(sessionID)
+          data.queuedPrompts.delete(sessionID)
           if (data.prompts.get(sessionID)?.queued) data.prompts.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
         }),
@@ -107,6 +112,8 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const prompt = data.prompts.get(sessionID)
       if (prompt) prompt.cancelled = true
+      for (const queued of data.queuedPrompts.get(sessionID)?.values() ?? []) queued.cancelled = true
+      data.queuedPrompts.delete(sessionID)
       data.prompts.delete(sessionID)
       yield* cancelBackgroundJobs(background, sessionID)
       const existing = data.runners.get(sessionID)
@@ -122,7 +129,21 @@ const layer = Layer.effect(
       messageId: MessageID
     }) {
       const data = yield* InstanceState.get(state)
-      const prompt = { messageId: input.messageId, cancelled: false, queued: false }
+      const previous = data.prompts.get(input.sessionId)
+      if (previous && !previous.queued && previous.messageId !== input.messageId) {
+        previous.cancelled = true
+        previous.cancelledMessageIds.add(previous.messageId)
+      }
+      const prompt = {
+        messageId: input.messageId,
+        cancelled: false,
+        queued: false,
+        cancelledMessageIds:
+          data.activePrompts.get(input.sessionId)?.cancelled ??
+          [...(data.queuedPrompts.get(input.sessionId)?.values() ?? [])].at(-1)?.cancelledMessageIds ??
+          previous?.cancelledMessageIds ??
+          new Set<MessageID>(),
+      }
       data.prompts.set(input.sessionId, prompt)
       return prompt
     })
@@ -151,7 +172,14 @@ const layer = Layer.effect(
     }) {
       const data = yield* InstanceState.get(state)
       const active = data.activePrompts.get(input.sessionId)
-      if (active) active.messageId = input.messageId
+      if (!active) return
+      if (active.messageId && active.messageId !== input.messageId) {
+        const queued = data.queuedPrompts.get(input.sessionId)
+        queued?.delete(active.messageId)
+        if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
+        if (data.prompts.get(input.sessionId)?.messageId === active.messageId) data.prompts.delete(input.sessionId)
+      }
+      active.messageId = input.messageId
     })
 
     const cancelPrompt = Effect.fn("SessionRunState.cancelPrompt")(function* (input: {
@@ -165,24 +193,27 @@ const layer = Layer.effect(
       const claim = () => {
         if (data.runners.get(input.sessionId) !== active) return false
         if (data.activePrompts.get(input.sessionId) !== interrupted) return false
-        const prompt = data.prompts.get(input.sessionId)
+        const running = active?.state._tag === "Running" && interrupted?.messageId === input.messageId
+        const queued = data.queuedPrompts.get(input.sessionId)
+        const prompt = queued?.get(input.messageId) ?? data.prompts.get(input.sessionId)
         if (prompt?.messageId === input.messageId && !prompt.cancelled) {
           prompt.cancelled = true
           claimed = true
-          interrupted?.cancelled.add(input.messageId)
-          if (!prompt.queued) data.prompts.delete(input.sessionId)
+          if (!running) prompt.cancelledMessageIds.add(input.messageId)
+          queued?.delete(input.messageId)
+          if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
+          if (data.prompts.get(input.sessionId) === prompt) data.prompts.delete(input.sessionId)
         }
-        return active?.state._tag === "Running" && interrupted?.messageId === input.messageId
+        return running
       }
       // Preparation and queued prompts can be cancelled without interrupting another prompt or a shell.
       const stopped = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
       if (stopped) {
-        const next = data.prompts.get(input.sessionId)
-        const resume = next && next.messageId !== input.messageId && next.queued && !next.cancelled ? next : undefined
+        const resume = [...(data.queuedPrompts.get(input.sessionId)?.values() ?? [])].at(-1)
         if (data.runners.get(input.sessionId) === active && !active?.busy) {
           data.runners.delete(input.sessionId)
           data.activePrompts.delete(input.sessionId)
-          if (!resume && next?.queued) data.prompts.delete(input.sessionId)
+          if (!resume) data.queuedPrompts.delete(input.sessionId)
         }
         if (interrupted && resume) yield* interrupted.resume(resume).pipe(Effect.forkIn(data.scope))
         yield* status.clearIf(input.sessionId, () => !data.runners.get(input.sessionId)?.busy)
@@ -201,20 +232,29 @@ const layer = Layer.effect(
       let admitted = false
       const guarded = Effect.suspend(() => {
         if (ownership?.cancelled) {
-          const next = data.prompts.get(sessionID)
-          if (!next?.queued || next.cancelled) return onInterrupt
+          if (!data.queuedPrompts.get(sessionID)?.size) return onInterrupt
         }
         return work
       })
       return yield* active
         .ensureRunning(guarded, () => {
-          if (ownership?.cancelled || (ownership && data.prompts.get(sessionID) !== ownership)) return false
+          const current = ownership?.queued
+            ? [...(data.queuedPrompts.get(sessionID)?.values() ?? [])].at(-1)
+            : data.prompts.get(sessionID)
+          if (ownership?.cancelled || (ownership && current !== ownership)) return false
           admitted = true
-          if (ownership) ownership.queued = true
+          if (ownership) {
+            ownership.queued = true
+            ownership.cancelledMessageIds =
+              data.activePrompts.get(sessionID)?.cancelled ?? ownership.cancelledMessageIds
+            const queued = data.queuedPrompts.get(sessionID) ?? new Map<MessageID, Prompt>()
+            queued.set(ownership.messageId, ownership)
+            data.queuedPrompts.set(sessionID, queued)
+          }
           if (!active.busy || active.state._tag === "Shell") {
             data.activePrompts.set(sessionID, {
               messageId: ownership?.messageId,
-              cancelled: new Set(),
+              cancelled: ownership?.cancelledMessageIds ?? new Set(),
               resume: (next) => ensureRunning(sessionID, onInterrupt, work, next),
             })
           }
@@ -226,7 +266,6 @@ const layer = Layer.effect(
               if (admitted || data.runners.get(sessionID) !== active || active.busy) return
               data.runners.delete(sessionID)
               data.activePrompts.delete(sessionID)
-              if (data.prompts.get(sessionID)?.queued) data.prompts.delete(sessionID)
             }),
           ),
         )

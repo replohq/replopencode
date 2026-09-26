@@ -3240,3 +3240,137 @@ it.instance("orphaned reply resume tolerates a missing tool part and still re-en
     expect(yield* llm.hits).toHaveLength(1)
   }),
 )
+
+it.instance("stale prompt cancellation cannot interrupt an explicit resume", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const state = yield* SessionRunState.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Explicit resume ownership" })
+    const id = MessageID.ascending()
+    yield* llm.hang
+    const first = yield* prompt
+      .prompt({ sessionID: chat.id, messageID: id, parts: [{ type: "text", text: "first" }] })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: id })).toBe(true)
+    yield* Fiber.join(first)
+    const release = Promise.withResolvers<void>()
+    yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()))
+    yield* llm.push(reply().wait(release.promise).text("resume survived").stop())
+    const resumed = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(2)
+    expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: id })).toBe(false)
+    release.resolve()
+    const result = yield* Fiber.join(resumed)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "resume survived")).toBe(true)
+  }),
+)
+for (const stop of ["none", "prompt", "session"] as const) {
+  it.instance(`a prompt queued after the final history snapshot respects ${stop} cancellation`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const state = yield* SessionRunState.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Admission during completion" })
+      const response = Promise.withResolvers<void>()
+      yield* Effect.addFinalizer(() => Effect.sync(() => response.resolve()))
+      const ending = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<void>()
+      let intercept = false
+      const find = sessions.findMessage
+      const findSpy = spyOn(sessions, "findMessage").mockImplementation((...args) =>
+        find(...args).pipe(
+          Effect.tap(() => {
+            if (!intercept) return Effect.void
+            intercept = false
+            return Deferred.succeed(ending, undefined).pipe(Effect.andThen(Deferred.await(finish)))
+          }),
+        ),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => findSpy.mockRestore()))
+      const ensureSpy = spyOn(state, "ensureRunning")
+      yield* Effect.addFinalizer(() => Effect.sync(() => ensureSpy.mockRestore()))
+      yield* llm.push(reply().wait(response.promise).text("first finished").stop())
+      const first = yield* prompt
+        .prompt({ sessionID: chat.id, parts: [{ type: "text", text: "first" }] })
+        .pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      intercept = true
+      response.resolve()
+      yield* Deferred.await(ending)
+      const secondId = MessageID.ascending()
+      yield* llm.text("second finished")
+      const second = yield* prompt
+        .prompt({ sessionID: chat.id, messageID: secondId, parts: [{ type: "text", text: "second" }] })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.sync(() =>
+          ensureSpy.mock.calls.find((call) => call[3]?.messageId === secondId)?.[3]?.queued ? true : undefined,
+        ),
+        "B queued while A returns",
+      )
+      if (stop === "prompt") expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+      if (stop === "session") yield* state.cancel(chat.id)
+      yield* Deferred.succeed(finish, undefined)
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+      if (stop !== "none") {
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(false)
+        return
+      }
+      yield* llm.wait(2)
+      const messages = yield* pollWithTimeout(
+        sessions
+          .messages({ sessionID: chat.id })
+          .pipe(
+            Effect.map((messages) =>
+              messages.some(
+                (message) =>
+                  message.info.role === "assistant" &&
+                  message.info.parentID === secondId &&
+                  message.info.time.completed,
+              )
+                ? messages
+                : undefined,
+            ),
+          ),
+        "second prompt completed",
+      )
+      expect(yield* llm.calls).toBe(2)
+      expect(messages.some((message) => message.info.role === "assistant" && message.info.parentID === secondId)).toBe(
+        true,
+      )
+    }),
+  )
+}
+
+for (const stop of [false, true]) {
+  it.instance(`${stop ? "manual cancellation" : "normal completion"} emits exactly one session idle event`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const events = yield* EventV2Bridge.Service
+      const chat = yield* sessions.create({})
+      const seen: string[] = []
+      const off = yield* events.listen((event) => {
+        seen.push(event.type)
+        return Effect.void
+      })
+      if (stop) yield* llm.hang
+      else yield* llm.text("finished")
+      const pending = yield* prompt
+        .prompt({ sessionID: chat.id, parts: [{ type: "text", text: "hello" }] })
+        .pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      if (stop) yield* prompt.cancel(chat.id)
+      yield* Fiber.join(pending)
+      yield* off
+      expect(seen.filter((type) => type === SessionStatus.Event.Idle.type)).toHaveLength(1)
+    }),
+  )
+}

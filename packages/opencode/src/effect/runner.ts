@@ -1,4 +1,8 @@
-import { Cause, Deferred, Effect, Exit, Fiber, Latch, Schema, Scope, SynchronizedRef } from "effect"
+import { Context, Cause, Deferred, Effect, Exit, Fiber, Latch, Schema, Scope, SynchronizedRef } from "effect"
+
+export const ownsInterruption = Context.Reference<boolean>("~opencode/Runner/ownsInterruption", {
+  defaultValue: () => false,
+})
 
 export interface Runner<A, E = never> {
   readonly state: State<A, E>
@@ -85,6 +89,7 @@ export const make = <A, E = never>(
     Effect.gen(function* () {
       const id = next()
       const fiber = yield* work.pipe(
+        Effect.provideService(ownsInterruption, true),
         Effect.onExit((exit) => finishRun(id, done, exit)),
         Effect.forkIn(scope),
       )

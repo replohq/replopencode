@@ -18,6 +18,11 @@ export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly registerPrompt: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<Prompt>
+  readonly finishPrompt: (sessionID: SessionID, ownership: Prompt) => Effect.Effect<void>
+  readonly filterMessages: (
+    sessionID: SessionID,
+    messages: SessionV1.WithParts[],
+  ) => Effect.Effect<SessionV1.WithParts[]>
   readonly startStep: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<void>
   readonly cancelPrompt: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<boolean>
   readonly ensureRunning: (
@@ -49,7 +54,11 @@ const layer = Layer.effect(
         const prompts = new Map<SessionID, Prompt>()
         const activePrompts = new Map<
           SessionID,
-          { messageId: MessageID; resume: (prompt: Prompt) => Effect.Effect<SessionV1.WithParts> }
+          {
+            messageId?: MessageID
+            cancelled: Set<MessageID>
+            resume: (prompt: Prompt) => Effect.Effect<SessionV1.WithParts>
+          }
         >()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
@@ -58,6 +67,8 @@ const layer = Layer.effect(
               discard: true,
             })
             runners.clear()
+            prompts.clear()
+            activePrompts.clear()
           }),
         )
         return { runners, prompts, activePrompts, scope }
@@ -73,8 +84,10 @@ const layer = Layer.effect(
       if (existing) return existing
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
+          if (data.runners.get(sessionID) !== next || next.busy) return
           data.runners.delete(sessionID)
           data.activePrompts.delete(sessionID)
+          if (data.prompts.get(sessionID)?.queued) data.prompts.delete(sessionID)
           yield* status.set(sessionID, { type: "idle" })
         }),
         onBusy: status.set(sessionID, { type: "busy" }),
@@ -94,6 +107,7 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const prompt = data.prompts.get(sessionID)
       if (prompt) prompt.cancelled = true
+      data.prompts.delete(sessionID)
       yield* cancelBackgroundJobs(background, sessionID)
       const existing = data.runners.get(sessionID)
       if (!existing) {
@@ -113,6 +127,24 @@ const layer = Layer.effect(
       return prompt
     })
 
+    const finishPrompt = Effect.fn("SessionRunState.finishPrompt")(function* (sessionID: SessionID, ownership: Prompt) {
+      const data = yield* InstanceState.get(state)
+      if (!ownership.queued && data.prompts.get(sessionID) === ownership) data.prompts.delete(sessionID)
+    })
+
+    const filterMessages = Effect.fn("SessionRunState.filterMessages")(function* (
+      sessionID: SessionID,
+      messages: SessionV1.WithParts[],
+    ) {
+      const data = yield* InstanceState.get(state)
+      const cancelled = data.activePrompts.get(sessionID)?.cancelled
+      if (!cancelled?.size) return messages
+      // Queued prompts are already persisted; cancellation excludes them only from the current drain.
+      return messages.filter(
+        (message) => !cancelled.has(message.info.role === "user" ? message.info.id : message.info.parentID),
+      )
+    })
+
     const startStep = Effect.fn("SessionRunState.startStep")(function* (input: {
       sessionId: SessionID
       messageId: MessageID
@@ -129,30 +161,33 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const active = data.runners.get(input.sessionId)
       const interrupted = data.activePrompts.get(input.sessionId)
+      let claimed = false
       const claim = () => {
         if (data.runners.get(input.sessionId) !== active) return false
         if (data.activePrompts.get(input.sessionId) !== interrupted) return false
         const prompt = data.prompts.get(input.sessionId)
         if (prompt?.messageId === input.messageId && !prompt.cancelled) {
           prompt.cancelled = true
-          return true
+          claimed = true
+          interrupted?.cancelled.add(input.messageId)
+          if (!prompt.queued) data.prompts.delete(input.sessionId)
         }
-        return active?.busy === true && interrupted?.messageId === input.messageId
+        return active?.state._tag === "Running" && interrupted?.messageId === input.messageId
       }
-      // The runner checks ownership while detaching the exact fiber it will interrupt.
-      const cancelled = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
-      if (cancelled) {
+      // Preparation and queued prompts can be cancelled without interrupting another prompt or a shell.
+      const stopped = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
+      if (stopped) {
         const next = data.prompts.get(input.sessionId)
-        if (interrupted && next && next.messageId !== input.messageId && next.queued && !next.cancelled) {
-          // A newer prompt can be queued inside the interrupted loop and needs a fresh drain.
-          yield* interrupted.resume(next).pipe(Effect.forkIn(data.scope))
+        const resume = next && next.messageId !== input.messageId && next.queued && !next.cancelled ? next : undefined
+        if (data.runners.get(input.sessionId) === active && !active?.busy) {
+          data.runners.delete(input.sessionId)
+          data.activePrompts.delete(input.sessionId)
+          if (!resume && next?.queued) data.prompts.delete(input.sessionId)
         }
-        yield* status.clearIf(input.sessionId, () => {
-          const current = data.prompts.get(input.sessionId)
-          return current?.messageId === input.messageId && current.cancelled && !data.runners.get(input.sessionId)?.busy
-        })
+        if (interrupted && resume) yield* interrupted.resume(resume).pipe(Effect.forkIn(data.scope))
+        yield* status.clearIf(input.sessionId, () => !data.runners.get(input.sessionId)?.busy)
       }
-      return cancelled
+      return stopped || claimed
     })
 
     const ensureRunning: Interface["ensureRunning"] = Effect.fn("SessionRunState.ensureRunning")(function* (
@@ -163,18 +198,38 @@ const layer = Layer.effect(
     ) {
       const data = yield* InstanceState.get(state)
       const active = yield* runner(sessionID, onInterrupt)
-      return yield* active.ensureRunning(work, () => {
-        const prompt = ownership ?? data.prompts.get(sessionID)
-        if (prompt?.cancelled || (ownership && data.prompts.get(sessionID) !== ownership)) return false
-        if (prompt) prompt.queued = true
-        if ((!active.busy || active.state._tag === "Shell") && prompt) {
-          data.activePrompts.set(sessionID, {
-            messageId: prompt.messageId,
-            resume: (next) => ensureRunning(sessionID, onInterrupt, work, next),
-          })
+      let admitted = false
+      const guarded = Effect.suspend(() => {
+        if (ownership?.cancelled) {
+          const next = data.prompts.get(sessionID)
+          if (!next?.queued || next.cancelled) return onInterrupt
         }
-        return true
+        return work
       })
+      return yield* active
+        .ensureRunning(guarded, () => {
+          if (ownership?.cancelled || (ownership && data.prompts.get(sessionID) !== ownership)) return false
+          admitted = true
+          if (ownership) ownership.queued = true
+          if (!active.busy || active.state._tag === "Shell") {
+            data.activePrompts.set(sessionID, {
+              messageId: ownership?.messageId,
+              cancelled: new Set(),
+              resume: (next) => ensureRunning(sessionID, onInterrupt, work, next),
+            })
+          }
+          return true
+        })
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (admitted || data.runners.get(sessionID) !== active || active.busy) return
+              data.runners.delete(sessionID)
+              data.activePrompts.delete(sessionID)
+              if (data.prompts.get(sessionID)?.queued) data.prompts.delete(sessionID)
+            }),
+          ),
+        )
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -188,7 +243,17 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-    return Service.of({ assertNotBusy, cancel, registerPrompt, startStep, cancelPrompt, ensureRunning, startShell })
+    return Service.of({
+      assertNotBusy,
+      cancel,
+      registerPrompt,
+      finishPrompt,
+      filterMessages,
+      startStep,
+      cancelPrompt,
+      ensureRunning,
+      startShell,
+    })
   }),
 )
 

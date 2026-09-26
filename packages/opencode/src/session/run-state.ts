@@ -28,7 +28,7 @@ export interface Interface {
     sessionId: SessionID
     messageId: MessageID
     messageIds: MessageID[]
-  }) => Effect.Effect<void>
+  }) => Effect.Effect<boolean>
   readonly cancelPrompt: (input: { sessionId: SessionID; messageId: MessageID }) => Effect.Effect<boolean>
   readonly ensureRunning: (
     sessionID: SessionID,
@@ -190,17 +190,21 @@ const layer = Layer.effect(
     }) {
       const data = yield* InstanceState.get(state)
       const active = data.activePrompts.get(input.sessionId)
-      if (!active) return
+      if (!active) return true
+      // A queued cancellation may invalidate the snapshot before this step takes ownership.
+      if (input.messageIds.some((id) => active.cancelled.has(id))) return false
+      const queued = data.queuedPrompts.get(input.sessionId)
       for (const id of input.messageIds) {
-        if (data.queuedPrompts.get(input.sessionId)?.has(id)) active.consumed.add(id)
+        if (!queued?.has(id)) continue
+        active.consumed.add(id)
+        if (id !== input.messageId) queued.delete(id)
       }
-      if (active.messageId && active.messageId !== input.messageId) {
-        const queued = data.queuedPrompts.get(input.sessionId)
-        queued?.delete(active.messageId)
-        if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
-        if (data.prompts.get(input.sessionId)?.messageId === active.messageId) data.prompts.delete(input.sessionId)
-      }
+      if (active.messageId && active.messageId !== input.messageId) queued?.delete(active.messageId)
+      if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
+      const latest = data.prompts.get(input.sessionId)
+      if (latest?.queued && queued?.get(latest.messageId) !== latest) data.prompts.delete(input.sessionId)
       active.messageId = input.messageId
+      return true
     })
 
     const cancelPrompt = Effect.fn("SessionRunState.cancelPrompt")(function* (input: {

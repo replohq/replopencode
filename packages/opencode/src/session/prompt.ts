@@ -1060,7 +1060,9 @@ const layer = Layer.effect(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
       const messageId = input.messageID ?? MessageID.ascending()
-      const ownership = yield* state.registerPrompt({ sessionId: input.sessionID, messageId })
+      const ownership =
+        input.noReply === true ? undefined : yield* state.registerPrompt({ sessionId: input.sessionID, messageId })
+      if (ownership) yield* Effect.addFinalizer(() => state.finishPrompt(input.sessionID, ownership))
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage({ ...input, messageID: messageId })
@@ -1082,7 +1084,7 @@ const layer = Layer.effect(
         runLoop(input.sessionID),
         ownership,
       )
-    })
+    }, Effect.scoped)
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1144,6 +1146,7 @@ const layer = Layer.effect(
           }
           historyMs += Date.now() - historyStart
 
+          msgs = yield* state.filterMessages(sessionID, msgs)
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")

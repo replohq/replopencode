@@ -120,7 +120,9 @@ it.instance(
       const test = yield* TestInstance
       const sessions = yield* SessionNs.Service
       const state = yield* SessionRunState.Service
-      const session = yield* sessions.create({})
+      const session = yield* Effect.acquireRelease(sessions.create({}), (created) =>
+        sessions.remove(created.id).pipe(Effect.ignore),
+      )
       const first = MessageID.ascending()
       const second = MessageID.ascending()
       yield* state.registerPrompt({ sessionId: session.id, messageId: first })
@@ -139,7 +141,6 @@ it.instance(
         method: "POST",
       })
       expect(yield* retry.json).toBe(false)
-      yield* sessions.remove(session.id)
     }),
   { git: true },
 )

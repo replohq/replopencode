@@ -3374,3 +3374,88 @@ for (const stop of [false, true]) {
     }),
   )
 }
+
+for (const [successor, afterClaim] of [
+  [false, false],
+  [true, false],
+  [true, true],
+]) {
+  it.instance(
+    `queued cancellation ${afterClaim ? "after" : "before"} snapshot claim respects ${successor ? "successor context" : "selected input"}`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(providerCfg)
+        const prompt = yield* SessionPrompt.Service
+        const state = yield* SessionRunState.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Cancellation during selection" })
+        const secondId = MessageID.ascending()
+        const selected = yield* Deferred.make<void>()
+        const proceed = yield* Deferred.make<void>()
+        let gated = false
+        const startStep = state.startStep
+        const stepSpy = spyOn(state, "startStep").mockImplementation((input) =>
+          Effect.gen(function* () {
+            if (!gated && input.messageIds.includes(secondId)) {
+              gated = true
+              if (afterClaim) {
+                const claimed = yield* startStep(input)
+                yield* Deferred.succeed(selected, undefined)
+                yield* Deferred.await(proceed)
+                return claimed
+              }
+              yield* Deferred.succeed(selected, undefined)
+              yield* Deferred.await(proceed)
+            }
+            return yield* startStep(input)
+          }),
+        )
+        yield* Effect.addFinalizer(() => Effect.sync(() => stepSpy.mockRestore()))
+        const ensureSpy = spyOn(state, "ensureRunning")
+        yield* Effect.addFinalizer(() => Effect.sync(() => ensureSpy.mockRestore()))
+        const release = Promise.withResolvers<void>()
+        yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()))
+        yield* llm.push(reply().wait(release.promise).text("first finished").stop())
+        const first = yield* prompt
+          .prompt({ sessionID: chat.id, parts: [{ type: "text", text: "first" }] })
+          .pipe(Effect.forkChild)
+        yield* llm.wait(1)
+        const second = yield* prompt
+          .prompt({
+            sessionID: chat.id,
+            messageID: secondId,
+            parts: [{ type: "text", text: "exclude-this-cancelled-input" }],
+          })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            ensureSpy.mock.calls.find((call) => call[3]?.messageId === secondId)?.[3]?.queued ? true : undefined,
+          ),
+          "second admitted",
+        )
+        const thirdId = MessageID.ascending()
+        const third = successor
+          ? yield* prompt
+              .prompt({ sessionID: chat.id, messageID: thirdId, parts: [{ type: "text", text: "third" }] })
+              .pipe(Effect.forkChild)
+          : undefined
+        if (successor)
+          yield* pollWithTimeout(
+            Effect.sync(() =>
+              ensureSpy.mock.calls.find((call) => call[3]?.messageId === thirdId)?.[3]?.queued ? true : undefined,
+            ),
+            "third admitted",
+          )
+        yield* llm.text("next finished")
+        release.resolve()
+        yield* Deferred.await(selected)
+        expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(!afterClaim)
+        yield* Deferred.succeed(proceed, undefined)
+        yield* Fiber.join(first)
+        yield* Fiber.join(second)
+        if (third) yield* Fiber.join(third)
+        expect(yield* llm.calls).toBe(successor ? 2 : 1)
+        expect(JSON.stringify(yield* llm.inputs).includes("exclude-this-cancelled-input")).toBe(afterClaim)
+      }),
+  )
+}

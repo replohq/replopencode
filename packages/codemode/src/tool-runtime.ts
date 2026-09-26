@@ -342,6 +342,27 @@ const visibleDefinitions = <R>(tools: HostTools<R>) =>
 export const catalog = <R>(tools: HostTools<R>): ReadonlyArray<ToolDescription> =>
   visibleDefinitions(tools).map(({ description }) => description)
 
+/**
+ * A compact index entry for tools that are not inlined: `match` is a RegExp source tested
+ * against the tool name within `namespace`. An entry is listed only while at least one
+ * matching tool is present and not inlined, so it never advertises an absent tool.
+ */
+export type CatalogFamily = {
+  readonly namespace: string
+  readonly label: string
+  readonly match: string
+  readonly summary: string
+}
+
+/** Caller-ranked selection for the inlined catalog. */
+export type CatalogSelection = {
+  /** Tool paths (`namespace.tool`), most important first. When set, only these are inlined. */
+  readonly featured?: ReadonlyArray<string>
+  /** Maximum number of featured tools inlined. Default: as many as fit the budget. */
+  readonly featuredLimit?: number
+  readonly families?: ReadonlyArray<CatalogFamily>
+}
+
 export type DiscoveryPlan = {
   readonly catalog: ReadonlyArray<ToolDescription>
   readonly instructions: string
@@ -482,40 +503,18 @@ export const assertValidTools = <R>(tools: HostTools<R>): void => {
 }
 
 /**
- * Budgeted catalog: every namespace is always listed with its tool count; full call
- * signatures are inlined against the `catalogBudget` (estimated tokens,
- * chars/4) round-robin across namespaces - in each round (namespaces alphabetical), every
- * namespace still holding un-inlined tools attempts to place its next-cheapest line, and
- * a namespace whose next line does not fit is done while the others keep going - so every
- * namespace gets some representation before any namespace gets everything. The section
- * states exactly how comprehensive it is - overall (COMPLETE vs PARTIAL) and per
- * namespace. Namespace stub lines are never budgeted: every namespace appears with its
- * tool count even at budget 0.
+ * Round-robin fairness: in each round (namespaces alphabetical), every namespace still
+ * holding un-inlined tools tries to place its next-cheapest line against the shared budget;
+ * a namespace whose next line does not fit is done - the others keep going - so every
+ * namespace gets some representation before any namespace gets everything.
  */
-export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBudget): DiscoveryPlan => {
-  if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
-    throw new RangeError("discovery.catalogBudget must be a non-negative safe integer")
-  }
-  const visible = visibleDefinitions(tools)
-  const described = visible.map(({ description }) => description)
-
-  const namespaces = new Map<string, Array<ToolDescription>>()
-  for (const tool of described) {
-    const [namespace = tool.path] = tool.path.split(".")
-    const group = namespaces.get(namespace) ?? []
-    group.push(tool)
-    namespaces.set(namespace, group)
-  }
-  const ordered = [...namespaces].sort(([left], [right]) => left.localeCompare(right))
-
-  // Select which signatures fit the budget before emitting, so the list can state
-  // exactly how comprehensive it is. Round-robin fairness: in each round (namespaces
-  // alphabetical), every namespace still holding un-inlined tools tries to place its
-  // next-cheapest line against the shared budget; a namespace whose next line does not
-  // fit is done - the others keep going - so every namespace gets some representation
-  // before any namespace gets everything.
+const selectRoundRobin = (
+  ordered: ReadonlyArray<readonly [string, ReadonlyArray<ToolDescription>]>,
+  catalogBudget: number,
+): ReadonlyMap<string, ReadonlyArray<ToolDescription>> => {
   const selections = ordered.map(([namespace, group]) => ({
     namespace,
+    group,
     picked: new Set<ToolDescription>(),
     queue: [...group].sort(
       (left, right) =>
@@ -537,10 +536,86 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
     }
     active = stillActive
   }
-  const shown = new Map<string, ReadonlySet<ToolDescription>>(
-    selections.map(({ namespace, picked }) => [namespace, picked]),
+  return new Map(
+    selections.map(({ namespace, group, picked }) => [namespace, group.filter((tool) => picked.has(tool))]),
   )
-  const totalShown = selections.reduce((total, { picked }) => total + picked.size, 0)
+}
+
+/** Caller-ranked selection: featured paths in order, skipping absent tools and lines that do not fit. */
+const selectFeatured = (
+  described: ReadonlyArray<ToolDescription>,
+  featured: ReadonlyArray<string>,
+  featuredLimit: number,
+  catalogBudget: number,
+): ReadonlyMap<string, ReadonlyArray<ToolDescription>> => {
+  const byPath = new Map(described.map((tool) => [tool.path, tool]))
+  const picked = new Set<ToolDescription>()
+  let used = 0
+  for (const path of featured) {
+    if (picked.size >= featuredLimit) break
+    const tool = byPath.get(path)
+    if (tool === undefined || picked.has(tool)) continue
+    const cost = estimateTokens(catalogLine(tool))
+    if (used + cost > catalogBudget) continue
+    picked.add(tool)
+    used += cost
+  }
+  const shown = new Map<string, Array<ToolDescription>>()
+  for (const tool of picked) {
+    const [namespace = tool.path] = tool.path.split(".")
+    shown.set(namespace, [...(shown.get(namespace) ?? []), tool])
+  }
+  return shown
+}
+
+/**
+ * Budgeted catalog: every namespace is always listed with its tool count; full call
+ * signatures are inlined against the `catalogBudget` (estimated tokens,
+ * chars/4) round-robin across namespaces - in each round (namespaces alphabetical), every
+ * namespace still holding un-inlined tools attempts to place its next-cheapest line, and
+ * a namespace whose next line does not fit is done while the others keep going - so every
+ * namespace gets some representation before any namespace gets everything. The section
+ * states exactly how comprehensive it is - overall (COMPLETE vs PARTIAL) and per
+ * namespace. Namespace stub lines are never budgeted: every namespace appears with its
+ * tool count even at budget 0.
+ *
+ * With `selection.featured`, the caller's ranking replaces the round-robin: featured tools
+ * that exist are inlined in that order until `featuredLimit` or the budget is reached, and
+ * nothing else is inlined. `selection.families` adds an unbudgeted one-line index per family
+ * of tools that are present but not inlined, so every family stays discoverable by search.
+ */
+export const prepare = <R>(
+  tools: HostTools<R>,
+  catalogBudget = defaultCatalogBudget,
+  selection: CatalogSelection = {},
+): DiscoveryPlan => {
+  if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
+    throw new RangeError("discovery.catalogBudget must be a non-negative safe integer")
+  }
+  const featuredLimit = selection.featuredLimit ?? Number.MAX_SAFE_INTEGER
+  if (!Number.isSafeInteger(featuredLimit) || featuredLimit < 0) {
+    throw new RangeError("discovery.featuredLimit must be a non-negative safe integer")
+  }
+  const families = (selection.families ?? []).map((family) => ({ ...family, pattern: new RegExp(family.match) }))
+  const visible = visibleDefinitions(tools)
+  const described = visible.map(({ description }) => description)
+
+  const namespaces = new Map<string, Array<ToolDescription>>()
+  for (const tool of described) {
+    const [namespace = tool.path] = tool.path.split(".")
+    const group = namespaces.get(namespace) ?? []
+    group.push(tool)
+    namespaces.set(namespace, group)
+  }
+  const ordered = [...namespaces].sort(([left], [right]) => left.localeCompare(right))
+
+  // Select which signatures fit the budget before emitting, so the list can state
+  // exactly how comprehensive it is.
+  const shown =
+    selection.featured === undefined
+      ? selectRoundRobin(ordered, catalogBudget)
+      : selectFeatured(described, selection.featured, featuredLimit, catalogBudget)
+  const totalShown = [...shown.values()].reduce((total, picked) => total + picked.length, 0)
   const complete = totalShown === described.length
 
   const empty = described.length === 0
@@ -621,18 +696,33 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
       "",
     )
     for (const [namespace, group] of ordered) {
-      const picked = shown.get(namespace)!
+      const picked = shown.get(namespace) ?? []
       const count = `${group.length} tool${group.length === 1 ? "" : "s"}`
       // Annotate only when a namespace is not fully shown, so a comprehensive
       // namespace reads cleanly and a truncated one is unambiguous.
       const label =
-        picked.size === group.length
+        picked.length === group.length
           ? count
-          : picked.size === 0
+          : picked.length === 0
             ? `${count}, none shown`
-            : `${count}, ${picked.size} shown`
+            : `${count}, ${picked.length} shown`
       toolSection.push(`- ${namespace} (${label})`)
-      for (const tool of group) if (picked.has(tool)) toolSection.push(catalogLine(tool))
+      for (const tool of picked) toolSection.push(catalogLine(tool))
+      const hiddenNames = group
+        .filter((tool) => !picked.includes(tool))
+        .map((tool) => tool.path.slice(namespace.length + 1))
+      const familyLines = families
+        .filter((family) => family.namespace === namespace)
+        .flatMap((family) => {
+          const matching = hiddenNames.filter((name) => family.pattern.test(name)).length
+          return matching === 0 ? [] : [`  - ${family.label} (${matching}): ${family.summary}`]
+        })
+      if (familyLines.length > 0) {
+        toolSection.push(
+          `  Not shown, by family (get exact signatures with tools.$codemode.search({ query, namespace: ${JSON.stringify(namespace)} })):`,
+          ...familyLines,
+        )
+      }
     }
     if (!complete) {
       toolSection.push("", "Search returns complete callable signatures:", `- ${searchDescription.signature}`)

@@ -331,5 +331,22 @@ export interface Hooks {
   /**
    * Modify tool definitions (description and parameters) sent to LLM
    */
-  "tool.definition"?: (input: { toolID: string }, output: { description: string; parameters: any }) => Promise<void>
+  "tool.definition"?: (
+    input: { toolID: string },
+    output: {
+      description: string
+      parameters: any
+      /**
+       * `execute` only: how its MCP tool catalog is inlined. `featured` tool paths
+       * (`namespace.tool`, most important first) replace the length-ordered selection;
+       * `families` index tools that are present but not inlined.
+       */
+      discovery?: {
+        catalogBudget?: number
+        featured?: string[]
+        featuredLimit?: number
+        families?: { namespace: string; label: string; match: string; summary: string }[]
+      }
+    },
+  ) => Promise<void>
 }

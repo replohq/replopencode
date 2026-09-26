@@ -96,6 +96,66 @@ const withEmptyCodeMode = testEffect(
 )
 const withBrokenPlugin = testEffect(LayerNode.compile(root, [...replacements, [Plugin.node, brokenPluginLayer]]))
 
+// A plugin that steers execute's catalog through the tool.definition hook.
+const discoveryPluginLayer = (discovery: unknown) =>
+  Layer.succeed(
+    Plugin.Service,
+    Plugin.Service.of({
+      init: () => Effect.void,
+      reload: () => Effect.void,
+      trigger: ((name: string, input: { toolID?: string }, output: Record<string, unknown>) =>
+        Effect.sync(() => {
+          if (name === "tool.definition" && input.toolID === "execute") {
+            output.description = `Guidance first.\n${output.description}`
+            output.discovery = discovery
+          }
+          return output
+        })) as unknown as Plugin.Interface["trigger"],
+      list: () => Effect.succeed([]),
+    }),
+  )
+const withCodeModeDiscovery = (discovery: unknown) =>
+  testEffect(
+    LayerNode.compile(root, [
+      [Config.node, configLayer],
+      [RuntimeFlags.node, RuntimeFlags.layer({ experimentalCodeMode: true })],
+      [
+        MCP.node,
+        Layer.mock(MCP.Service, {
+          tools: () =>
+            Effect.succeed({
+              weather_current: {
+                def: {
+                  name: "current",
+                  description: "current weather",
+                  inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+                } as MCPToolDef,
+                client: {} as MCP.McpTool["client"],
+              },
+              weather_forecast_hourly: {
+                def: {
+                  name: "forecast_hourly",
+                  description: "hourly forecast for the next several days, with a long description",
+                  inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+                } as MCPToolDef,
+                client: {} as MCP.McpTool["client"],
+              },
+            }),
+          clients: () => Effect.succeed({ weather: {} as any }),
+        }),
+      ],
+      [Plugin.node, discoveryPluginLayer(discovery)],
+    ]),
+  )
+const withFeaturedCatalog = withCodeModeDiscovery({
+  featured: ["weather.forecast_hourly"],
+  families: [{ namespace: "weather", label: "current*", match: "^current", summary: "conditions now" }],
+})
+const withInvalidDiscovery = withCodeModeDiscovery({
+  featured: ["weather.forecast_hourly"],
+  families: [{ namespace: "weather", label: "x", match: "(", summary: "" }],
+})
+
 afterEach(async () => {
   await disposeAllInstances()
 })
@@ -134,6 +194,41 @@ describe("tool.registry", () => {
       expect(ids).toContain("execute")
       expect(tools.map((tool) => tool.id)).toContain("execute")
       expect(execute?.description).toContain("tools.weather.current(input: {\n  city: string,\n})")
+    }),
+  )
+
+  withFeaturedCatalog.instance("lets a tool.definition hook rank execute's catalog", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.defaultInfo(),
+      })
+      const description = tools.find((tool) => tool.id === "execute")?.description ?? ""
+
+      expect(description.startsWith("Guidance first.\n")).toBe(true)
+      expect(description).toContain("PARTIAL - 1 of 2 shown")
+      expect(description).toContain("tools.weather.forecast_hourly(input: {")
+      expect(description).not.toContain("tools.weather.current(input:")
+      expect(description).toContain("  - current* (1): conditions now")
+    }),
+  )
+
+  withInvalidDiscovery.instance("falls back to the default catalog when hook discovery options are invalid", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.defaultInfo(),
+      })
+      const description = tools.find((tool) => tool.id === "execute")?.description ?? ""
+
+      expect(description).toContain("COMPLETE list")
+      expect(description).toContain("tools.weather.current(input: {")
     }),
   )
 

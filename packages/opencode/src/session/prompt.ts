@@ -1080,7 +1080,7 @@ const layer = Layer.effect(
         input.sessionID,
         lastAssistant(input.sessionID),
         runLoop(input.sessionID),
-        () => !ownership.cancelled,
+        ownership,
       )
     })
 
@@ -1147,6 +1147,7 @@ const layer = Layer.effect(
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          yield* state.startStep({ sessionId: sessionID, messageId: lastUser.id })
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,

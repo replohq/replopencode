@@ -10045,6 +10045,37 @@ export type SessionAbortResponses = {
 
 export type SessionAbortResponse = SessionAbortResponses[keyof SessionAbortResponses]
 
+export type SessionAbortPromptData = {
+  body?: never
+  path: {
+    sessionID: string
+    messageId: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/prompt/{messageId}/abort"
+}
+
+export type SessionAbortPromptErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionAbortPromptError = SessionAbortPromptErrors[keyof SessionAbortPromptErrors]
+
+export type SessionAbortPromptResponses = {
+  /**
+   * Whether the matching prompt was cancelled
+   */
+  200: boolean
+}
+
+export type SessionAbortPromptResponse = SessionAbortPromptResponses[keyof SessionAbortPromptResponses]
+
 export type SessionInitData = {
   body?: {
     modelID: string

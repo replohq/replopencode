@@ -1059,9 +1059,13 @@ const layer = Layer.effect(
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
+      const messageId = input.messageID ?? MessageID.ascending()
+      const ownership =
+        input.noReply === true ? undefined : yield* state.registerPrompt({ sessionId: input.sessionID, messageId })
+      if (ownership) yield* Effect.addFinalizer(() => state.finishPrompt(input.sessionID, ownership))
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
-      const message = yield* createUserMessage(input)
+      const message = yield* createUserMessage({ ...input, messageID: messageId })
       yield* sessions.touch(input.sessionID)
 
       const permissions: PermissionV1.Rule[] = []
@@ -1074,8 +1078,13 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
-    })
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID),
+        runLoop(input.sessionID),
+        ownership,
+      )
+    }, Effect.scoped)
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1137,9 +1146,16 @@ const layer = Layer.effect(
           }
           historyMs += Date.now() - historyStart
 
+          msgs = yield* state.filterMessages(sessionID, msgs)
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          const claimed = yield* state.startStep({
+            sessionId: sessionID,
+            messageId: lastUser.id,
+            messageIds: msgs.map((message) => (message.info.role === "user" ? message.info.id : message.info.parentID)),
+          })
+          if (!claimed) continue
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,

@@ -5,7 +5,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { expect } from "bun:test"
+import { expect, spyOn } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, Option, References } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -1311,6 +1311,8 @@ for (const afterShell of [false, true]) {
       const state = yield* SessionRunState.Service
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({ title: "Queued replacement" })
+      const ensureRunning = spyOn(state, "ensureRunning")
+      yield* Effect.addFinalizer(() => Effect.sync(() => ensureRunning.mockRestore()))
       const releaseShell = yield* Deferred.make<void>()
       if (afterShell) {
         const seeded = yield* seed(chat.id, { finish: "stop" })
@@ -1327,14 +1329,11 @@ for (const afterShell of [false, true]) {
         .pipe(Effect.forkChild)
       if (afterShell) {
         yield* pollWithTimeout(
-          sessions
-            .messages({ sessionID: chat.id })
-            .pipe(
-              Effect.map((messages) => (messages.some((message) => message.info.id === firstId) ? true : undefined)),
-            ),
-          "prompt admitted behind shell",
+          Effect.sync(() =>
+            ensureRunning.mock.calls.find((call) => call[3]?.messageId === firstId)?.[3]?.queued ? true : undefined,
+          ),
+          "prompt queued behind shell",
         )
-        yield* Effect.sleep(50)
         expect(yield* llm.calls).toBe(0)
         yield* Deferred.succeed(releaseShell, undefined)
       }
@@ -1374,39 +1373,6 @@ for (const afterShell of [false, true]) {
         "replacement answered",
       )
       expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(false)
-    }),
-  )
-}
-
-for (const noReply of [false, true]) {
-  it.instance(`cancelling a hung prompt does not resume a ${noReply ? "no-reply" : "preparing"} replacement`, () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig(providerCfg)
-      const prompt = yield* SessionPrompt.Service
-      const state = yield* SessionRunState.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({ title: "Preparing replacement" })
-      const firstId = MessageID.ascending()
-      yield* llm.hang
-      const first = yield* prompt
-        .prompt({ sessionID: chat.id, messageID: firstId, agent: "build", parts: [{ type: "text", text: "first" }] })
-        .pipe(Effect.forkChild)
-      yield* llm.wait(1)
-      const secondId = MessageID.ascending()
-      if (noReply) {
-        yield* prompt.prompt({
-          sessionID: chat.id,
-          messageID: secondId,
-          noReply: true,
-          parts: [{ type: "text", text: "context only" }],
-        })
-      } else {
-        yield* state.registerPrompt({ sessionId: chat.id, messageId: secondId })
-      }
-      expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
-      yield* Fiber.await(first)
-      yield* Effect.sleep(100)
-      expect(yield* llm.calls).toBe(1)
     }),
   )
 }

@@ -1311,6 +1311,22 @@ for (const afterShell of [false, true]) {
       const state = yield* SessionRunState.Service
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({ title: "Queued replacement" })
+      const status = yield* SessionStatus.Service
+      const instruction = yield* Instruction.Service
+      const preparing = yield* Deferred.make<void>()
+      const proceed = yield* Deferred.make<void>()
+      const system = instruction.system
+      let runs = 0
+      const systemSpy = spyOn(instruction, "system").mockImplementation(() =>
+        Effect.gen(function* () {
+          if (++runs === 2) {
+            yield* Deferred.succeed(preparing, undefined)
+            yield* Deferred.await(proceed)
+          }
+          return yield* system()
+        }),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => systemSpy.mockRestore()))
       const ensureRunning = spyOn(state, "ensureRunning")
       yield* Effect.addFinalizer(() => Effect.sync(() => ensureRunning.mockRestore()))
       const releaseShell = yield* Deferred.make<void>()
@@ -1352,6 +1368,9 @@ for (const afterShell of [false, true]) {
         "replacement admitted",
       )
       expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
+      yield* Deferred.await(preparing)
+      expect((yield* status.get(chat.id)).type).toBe("busy")
+      yield* Deferred.succeed(proceed, undefined)
       yield* llm.wait(2)
       yield* Fiber.await(first)
       yield* Fiber.await(second)
@@ -1373,6 +1392,75 @@ for (const afterShell of [false, true]) {
         "replacement answered",
       )
       expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(false)
+    }),
+  )
+}
+
+for (const stop of [false, true]) {
+  noLLMServer.instance(`cancelling a successor during ${stop ? "abort" : "completion"} handoff clears busy status`, () =>
+    Effect.gen(function* () {
+      const state = yield* SessionRunState.Service
+      const status = yield* SessionStatus.Service
+      const sessions = yield* Session.Service
+      const events = yield* EventV2Bridge.Service
+      const chat = yield* sessions.create({})
+      const seeded = yield* seed(chat.id)
+      const result = { info: seeded.assistant, parts: [] }
+      const firstId = MessageID.ascending()
+      const secondId = MessageID.ascending()
+      const entered = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<void>()
+      let runs = 0
+      const work = Effect.gen(function* () {
+        runs++
+        yield* status.set(chat.id, { type: "busy" })
+        yield* Deferred.succeed(entered, undefined)
+        yield* Deferred.await(finish)
+        return result
+      })
+      const firstOwnership = yield* state.registerPrompt({ sessionId: chat.id, messageId: firstId })
+      const first = yield* state
+        .ensureRunning(chat.id, Effect.succeed(result), work, firstOwnership)
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(entered)
+      const secondOwnership = yield* state.registerPrompt({ sessionId: chat.id, messageId: secondId })
+      const second = yield* state
+        .ensureRunning(chat.id, Effect.succeed(result), work, secondOwnership)
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(Effect.sync(() => (secondOwnership.queued ? true : undefined)), "successor queued")
+      let cancelled = false
+      const clearIf = status.clearIf
+      const clearSpy = spyOn(status, "clearIf").mockImplementation((...args) =>
+        clearIf(...args).pipe(
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              if (cancelled) return
+              cancelled = true
+              // Cancel after handoff cleanup, before the forked successor can claim its runner.
+              expect((yield* status.get(chat.id)).type).toBe("busy")
+              expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
+            }),
+          ),
+        ),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => clearSpy.mockRestore()))
+      const seen: string[] = []
+      const off = yield* events.listen((event) => {
+        seen.push(event.type)
+        return Effect.void
+      })
+      if (stop) expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: firstId })).toBe(true)
+      else yield* Deferred.succeed(finish, undefined)
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+      yield* pollWithTimeout(
+        status.get(chat.id).pipe(Effect.map((current) => (current.type === "idle" ? true : undefined))),
+        "cancelled handoff becomes idle",
+      )
+      expect(cancelled).toBe(true)
+      expect(runs).toBe(1)
+      expect(seen).not.toContain(SessionStatus.Event.Idle.type)
+      yield* off
     }),
   )
 }
@@ -3275,6 +3363,22 @@ for (const stop of ["none", "prompt", "session"] as const) {
       const state = yield* SessionRunState.Service
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({ title: "Admission during completion" })
+      const status = yield* SessionStatus.Service
+      const instruction = yield* Instruction.Service
+      const preparing = yield* Deferred.make<void>()
+      const proceed = yield* Deferred.make<void>()
+      const system = instruction.system
+      let runs = 0
+      const systemSpy = spyOn(instruction, "system").mockImplementation(() =>
+        Effect.gen(function* () {
+          if (++runs === 2) {
+            yield* Deferred.succeed(preparing, undefined)
+            yield* Deferred.await(proceed)
+          }
+          return yield* system()
+        }),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(() => systemSpy.mockRestore()))
       const response = Promise.withResolvers<void>()
       yield* Effect.addFinalizer(() => Effect.sync(() => response.resolve()))
       const ending = yield* Deferred.make<void>()
@@ -3315,13 +3419,20 @@ for (const stop of ["none", "prompt", "session"] as const) {
       if (stop === "prompt") expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(true)
       if (stop === "session") yield* state.cancel(chat.id)
       yield* Deferred.succeed(finish, undefined)
+      if (stop === "none") {
+        yield* Deferred.await(preparing)
+        expect((yield* status.get(chat.id)).type).toBe("busy")
+        yield* Deferred.succeed(proceed, undefined)
+      }
       yield* Fiber.join(first)
-      yield* Fiber.join(second)
+      const result = yield* Fiber.join(second)
       if (stop !== "none") {
         expect(yield* llm.calls).toBe(1)
         expect(yield* state.cancelPrompt({ sessionId: chat.id, messageId: secondId })).toBe(false)
         return
       }
+      expect(result.info.role).toBe("assistant")
+      expect(result.info.role === "assistant" && result.info.parentID).toBe(secondId)
       yield* llm.wait(2)
       const messages = yield* pollWithTimeout(
         sessions

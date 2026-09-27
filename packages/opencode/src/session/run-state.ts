@@ -3,7 +3,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
-import { Effect, Latch, Layer, Scope, Context } from "effect"
+import { Cause, Deferred, Effect, Exit, Latch, Layer, Scope, Context } from "effect"
 import { Session } from "./session"
 import { MessageID, SessionID } from "./schema"
 import { SessionStatus } from "./status"
@@ -13,6 +13,8 @@ interface Prompt {
   cancelled: boolean
   queued: boolean
   cancelledMessageIds: Set<MessageID>
+  done: Deferred.Deferred<SessionV1.WithParts>
+  onInterrupt?: Effect.Effect<SessionV1.WithParts>
 }
 
 export interface Interface {
@@ -65,6 +67,7 @@ const layer = Layer.effect(
             messageId?: MessageID
             cancelled: Set<MessageID>
             consumed: Set<MessageID>
+            waiters: Set<Prompt>
             resume: (prompt: Prompt) => Effect.Effect<SessionV1.WithParts>
           }
         >()
@@ -107,7 +110,10 @@ const layer = Layer.effect(
           // Admission can happen after the final history snapshot but before the runner settles.
           if (active && pending) {
             yield* active.resume(pending).pipe(Effect.forkIn(data.scope))
-            yield* status.clearIf(sessionID, () => !data.runners.get(sessionID)?.busy)
+            yield* status.clearIf(
+              sessionID,
+              () => !data.runners.get(sessionID)?.busy && !data.queuedPrompts.get(sessionID)?.size,
+            )
             return
           }
           yield* status.set(sessionID, { type: "idle" })
@@ -129,16 +135,17 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const prompt = data.prompts.get(sessionID)
       if (prompt) prompt.cancelled = true
-      for (const queued of data.queuedPrompts.get(sessionID)?.values() ?? []) queued.cancelled = true
+      const queued = [...(data.queuedPrompts.get(sessionID)?.values() ?? [])]
+      for (const prompt of queued) prompt.cancelled = true
       data.queuedPrompts.delete(sessionID)
       data.prompts.delete(sessionID)
       yield* cancelBackgroundJobs(background, sessionID)
       const existing = data.runners.get(sessionID)
-      if (!existing) {
-        yield* status.set(sessionID, { type: "idle" })
-        return
+      if (existing) yield* existing.cancel
+      if (!existing) yield* status.set(sessionID, { type: "idle" })
+      for (const prompt of queued) {
+        if (prompt.onInterrupt) yield* Deferred.complete(prompt.done, prompt.onInterrupt)
       }
-      yield* existing.cancel
     })
 
     const registerPrompt = Effect.fn("SessionRunState.registerPrompt")(function* (input: {
@@ -155,6 +162,9 @@ const layer = Layer.effect(
         messageId: input.messageId,
         cancelled: false,
         queued: false,
+        done:
+          data.queuedPrompts.get(input.sessionId)?.get(input.messageId)?.done ??
+          (yield* Deferred.make<SessionV1.WithParts>()),
         cancelledMessageIds:
           data.activePrompts.get(input.sessionId)?.cancelled ??
           [...(data.queuedPrompts.get(input.sessionId)?.values() ?? [])].at(-1)?.cancelledMessageIds ??
@@ -195,9 +205,11 @@ const layer = Layer.effect(
       if (input.messageIds.some((id) => active.cancelled.has(id))) return false
       const queued = data.queuedPrompts.get(input.sessionId)
       for (const id of input.messageIds) {
-        if (!queued?.has(id)) continue
+        const prompt = queued?.get(id)
+        if (!prompt) continue
+        active.waiters.add(prompt)
         active.consumed.add(id)
-        if (id !== input.messageId) queued.delete(id)
+        if (id !== input.messageId) queued?.delete(id)
       }
       if (active.messageId && active.messageId !== input.messageId) queued?.delete(active.messageId)
       if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
@@ -214,7 +226,7 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const active = data.runners.get(input.sessionId)
       const interrupted = data.activePrompts.get(input.sessionId)
-      let claimed = false
+      let cancelled: Prompt | undefined
       const claim = () => {
         if (data.runners.get(input.sessionId) !== active) return false
         if (data.activePrompts.get(input.sessionId) !== interrupted) return false
@@ -223,13 +235,13 @@ const layer = Layer.effect(
         const prompt = queued?.get(input.messageId) ?? data.prompts.get(input.sessionId)
         if (prompt?.messageId === input.messageId && !prompt.cancelled) {
           prompt.cancelled = true
-          claimed = true
+          cancelled = prompt
           if (!running) prompt.cancelledMessageIds.add(input.messageId)
           queued?.delete(input.messageId)
           if (!queued?.size) data.queuedPrompts.delete(input.sessionId)
-          if (data.prompts.get(input.sessionId) === prompt) data.prompts.delete(input.sessionId)
+          if (prompt.queued && data.prompts.get(input.sessionId) === prompt) data.prompts.delete(input.sessionId)
         }
-        return running && claimed
+        return running && cancelled !== undefined
       }
       // Preparation and queued prompts can be cancelled without interrupting another prompt or a shell.
       const stopped = active ? yield* active.cancelIf(claim, { notifyIdle: false }) : claim()
@@ -241,9 +253,13 @@ const layer = Layer.effect(
           if (!resume) data.queuedPrompts.delete(input.sessionId)
         }
         if (interrupted && resume) yield* interrupted.resume(resume).pipe(Effect.forkIn(data.scope))
-        yield* status.clearIf(input.sessionId, () => !data.runners.get(input.sessionId)?.busy)
+        yield* status.clearIf(
+          input.sessionId,
+          () => !data.runners.get(input.sessionId)?.busy && !data.queuedPrompts.get(input.sessionId)?.size,
+        )
       }
-      return stopped || claimed
+      if (cancelled?.onInterrupt) yield* Deferred.complete(cancelled.done, cancelled.onInterrupt)
+      return stopped || cancelled !== undefined
     })
 
     const ensureRunning: Interface["ensureRunning"] = Effect.fn("SessionRunState.ensureRunning")(function* (
@@ -255,13 +271,23 @@ const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const active = yield* runner(sessionID, onInterrupt)
       let admitted = false
+      const waiters = new Set<Prompt>()
       const guarded = Effect.suspend(() => {
         if (ownership?.cancelled) {
           if (!data.queuedPrompts.get(sessionID)?.size) return onInterrupt
         }
         return work
-      })
-      return yield* active
+      }).pipe(
+        Effect.onExit((exit) =>
+          Effect.gen(function* () {
+            if (!waiters.size) return
+            const result =
+              Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? yield* Effect.exit(onInterrupt) : exit
+            for (const prompt of waiters) yield* Deferred.done(prompt.done, result)
+          }),
+        ),
+      )
+      const result = yield* active
         .ensureRunning(guarded, () => {
           const current = ownership?.queued
             ? [...(data.queuedPrompts.get(sessionID)?.values() ?? [])].at(-1)
@@ -270,6 +296,7 @@ const layer = Layer.effect(
           admitted = true
           if (ownership) {
             ownership.queued = true
+            ownership.onInterrupt = onInterrupt
             ownership.cancelledMessageIds =
               data.activePrompts.get(sessionID)?.cancelled ?? ownership.cancelledMessageIds
             const queued = data.queuedPrompts.get(sessionID) ?? new Map<MessageID, Prompt>()
@@ -277,10 +304,12 @@ const layer = Layer.effect(
             data.queuedPrompts.set(sessionID, queued)
           }
           if (!active.busy || active.state._tag === "Shell") {
+            if (ownership) waiters.add(ownership)
             data.activePrompts.set(sessionID, {
               messageId: ownership?.messageId,
               cancelled: ownership?.cancelledMessageIds ?? new Set(),
               consumed: new Set(),
+              waiters,
               resume: (next) => ensureRunning(sessionID, onInterrupt, work, next),
             })
           }
@@ -288,13 +317,19 @@ const layer = Layer.effect(
         })
         .pipe(
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (admitted || data.runners.get(sessionID) !== active || active.busy) return
               data.runners.delete(sessionID)
               data.activePrompts.delete(sessionID)
+              yield* status.clearIf(
+                sessionID,
+                () => !data.runners.get(sessionID)?.busy && !data.queuedPrompts.get(sessionID)?.size,
+              )
             }),
           ),
         )
+      if (!ownership || !admitted || ownership.cancelled) return result
+      return yield* Deferred.await(ownership.done)
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (

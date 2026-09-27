@@ -14,7 +14,6 @@ export interface Interface {
   readonly get: (sessionID: SessionID) => Effect.Effect<Info>
   readonly list: () => Effect.Effect<Map<SessionID, Info>>
   readonly set: (sessionID: SessionID, status: Info) => Effect.Effect<void>
-  readonly clearIf: (sessionId: SessionID, predicate: () => boolean) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionStatus") {}
@@ -48,13 +47,7 @@ const layer = Layer.effect(
       data.set(sessionID, status)
     })
 
-    const clearIf = Effect.fn("SessionStatus.clearIf")(function* (sessionId: SessionID, predicate: () => boolean) {
-      const data = yield* InstanceState.get(state)
-      // A prompt-specific cancellation must not emit an unowned session-wide terminal event.
-      if (predicate()) data.delete(sessionId)
-    })
-
-    return Service.of({ get, list, set, clearIf })
+    return Service.of({ get, list, set })
   }),
 )
 

@@ -178,8 +178,6 @@ import type {
   QuestionReplyResponses,
   QuestionV2Reply,
   SessionAbortErrors,
-  SessionAbortPromptErrors,
-  SessionAbortPromptResponses,
   SessionAbortResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
@@ -3975,40 +3973,6 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAbortResponses, SessionAbortErrors, ThrowOnError>({
       url: "/session/{sessionID}/abort",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Abort the current prompt if its message ID still matches
-   *
-   * Cancel only the named prompt. Stale and repeated requests leave newer prompts untouched.
-   */
-  public abortPrompt<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      messageId: string
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "path", key: "messageId" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<SessionAbortPromptResponses, SessionAbortPromptErrors, ThrowOnError>({
-      url: "/session/{sessionID}/prompt/{messageId}/abort",
       ...options,
       ...params,
     })

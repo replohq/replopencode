@@ -1,4 +1,3 @@
-import { Runner } from "@/effect/runner"
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -780,13 +779,7 @@ const layer = Layer.effect(
               Effect.gen(function* () {
                 aborted = true
                 if (!ctx.assistantMessage.error) {
-                  const error = new DOMException("Aborted", "AbortError")
-                  if (yield* Runner.ownsInterruption) {
-                    // The runner owns terminal notifications when it interrupts its work.
-                    ctx.assistantMessage.error = parse(error)
-                  } else {
-                    yield* halt(error)
-                  }
+                  yield* halt(new DOMException("Aborted", "AbortError"))
                 }
               }),
             ),

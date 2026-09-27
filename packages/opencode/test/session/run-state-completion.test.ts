@@ -10,14 +10,16 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(SessionRunState.node))
 
-for (const [cancelFirst, duplicate] of [
-  [false, false],
-  [true, false],
-  [false, true],
-  [true, true],
+for (const [cancelFirst, duplicate, failFirst] of [
+  [false, false, false],
+  [true, false, false],
+  [false, true, false],
+  [true, true, false],
+  [false, false, true],
+  [false, true, true],
 ]) {
   it.instance(
-    `synchronous ${duplicate ? "duplicate" : "queued"} callers wait through ${cancelFirst ? "targeted abort" : "completion"} handoff`,
+    `synchronous ${duplicate ? "duplicate" : "queued"} callers wait through ${failFirst ? "defect" : cancelFirst ? "targeted abort" : "completion"} handoff`,
     () =>
       Effect.gen(function* () {
         const state = yield* SessionRunState.Service
@@ -36,6 +38,7 @@ for (const [cancelFirst, duplicate] of [
           if (calls === 1) {
             yield* Deferred.succeed(started, undefined)
             yield* Deferred.await(finishFirst)
+            if (failFirst) return yield* Effect.die("first run failed")
             return firstMessage
           }
           yield* state.startStep({
@@ -67,7 +70,8 @@ for (const [cancelFirst, duplicate] of [
         )
         if (cancelFirst) expect(yield* state.cancelPrompt({ sessionId, messageId: firstMessage.info.id })).toBe(true)
         else yield* Deferred.succeed(finishFirst, undefined)
-        yield* Fiber.join(first)
+        const firstResult = yield* Fiber.await(first)
+        expect(Exit.isFailure(firstResult)).toBe(failFirst)
         yield* Deferred.await(resumed)
         yield* Effect.yieldNow
         for (const fiber of queued) expect(fiber.pollUnsafe()).toBeUndefined()
@@ -119,6 +123,30 @@ it.instance("a model-work defect settles prompt completion with its failure", ()
     expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
     const completion = yield* Deferred.await(token.done).pipe(Effect.exit)
     expect(Exit.isFailure(completion) && Cause.hasDies(completion.cause)).toBe(true)
+  }),
+)
+
+it.instance("interrupting a synchronous caller does not wait for model completion", () =>
+  Effect.gen(function* () {
+    const state = yield* SessionRunState.Service
+    const sessionId = SessionID.make("ses_interrupted_caller")
+    const result = message(sessionId)
+    const token = yield* state.registerPrompt({ sessionId, messageId: result.info.id })
+    const started = yield* Deferred.make<void>()
+    const caller = yield* state
+      .ensureRunning(
+        sessionId,
+        Effect.succeed(result),
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+        token,
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(started)
+    yield* Fiber.interrupt(caller)
+    const exit = yield* Fiber.await(caller)
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    expect(yield* Deferred.isDone(token.done)).toBe(false)
+    yield* state.cancel(sessionId)
   }),
 )
 

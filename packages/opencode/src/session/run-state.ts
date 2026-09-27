@@ -327,9 +327,12 @@ const layer = Layer.effect(
               )
             }),
           ),
+          Effect.exit,
         )
-      if (!ownership || !admitted || ownership.cancelled) return result
-      return yield* Deferred.await(ownership.done)
+      if (Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)) return yield* Effect.failCause(result.cause)
+      if (ownership && admitted && !ownership.cancelled) return yield* Deferred.await(ownership.done)
+      if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause)
+      return result.value
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (

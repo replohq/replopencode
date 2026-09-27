@@ -89,6 +89,7 @@ export const SessionPaths = {
   update: `${root}/:sessionID`,
   fork: `${root}/:sessionID/fork`,
   abort: `${root}/:sessionID/abort`,
+  abortPrompt: `${root}/:sessionID/prompt/:messageId/abort`,
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
@@ -260,6 +261,18 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.abort",
             summary: "Abort session",
             description: "Abort an active session and stop any ongoing AI processing or command execution.",
+          }),
+        ),
+        HttpApiEndpoint.post("abortPrompt", SessionPaths.abortPrompt, {
+          params: { sessionID: SessionID, messageId: MessageID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Whether the matching prompt was cancelled"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.abortPrompt",
+            summary: "Abort the current prompt if its message ID still matches",
+            description: "Cancel only the named prompt. Stale and repeated requests leave newer prompts untouched.",
           }),
         ),
         HttpApiEndpoint.post("init", SessionPaths.init, {

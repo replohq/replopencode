@@ -1200,3 +1200,102 @@ describe("CodeMode public contract", () => {
     expect(() => CodeMode.make({ tools: { $codemode: { lookup } } })).toThrow(/reserved for CodeMode discovery tools/)
   })
 })
+
+describe("CodeMode pinned catalog", () => {
+  const make = (description: string) =>
+    Tool.make({
+      description,
+      input: Schema.Struct({ q: Schema.String }),
+      output: Schema.String,
+      run: () => Effect.succeed("ok"),
+    })
+  const tools = {
+    store: {
+      list_sites: make("List sites"),
+      shop_products_get: make("A much longer description that the length-ordered selection would place last"),
+      shop_products_search: make("Search products"),
+      shop_collections_get: make("Get a collection"),
+      get_account: make("Read the account"),
+    },
+    web: { fetch: make("Fetch a page") },
+  }
+
+  test("inlines only pinned tools, in the caller's order, skipping absent paths", () => {
+    const instructions = CodeMode.make({
+      tools,
+      discovery: { pinned: ["store.shop_products_get", "store.missing", "store.list_sites"] },
+    }).instructions()
+
+    expect(instructions).toContain(
+      "Available tools (PARTIAL - 2 of 6 shown; find the rest with tools.$codemode.search)",
+    )
+    expect(instructions).toContain("- store (5 tools, 2 shown)")
+    expect(instructions.indexOf("tools.store.shop_products_get(")).toBeLessThan(
+      instructions.indexOf("tools.store.list_sites("),
+    )
+    expect(instructions).not.toContain("tools.store.get_account(")
+    expect(instructions).toContain("- web (1 tool, none shown)")
+    expect(instructions).not.toContain("tools.web.fetch(")
+  })
+
+  test("caps pinned tools at pinnedLimit and the budget", () => {
+    const limited = CodeMode.make({
+      tools,
+      discovery: { pinned: ["store.get_account", "store.list_sites", "web.fetch"], pinnedLimit: 2 },
+    }).instructions()
+    expect(limited).toContain("PARTIAL - 2 of 6 shown")
+    expect(limited).not.toContain("tools.web.fetch(")
+
+    const budgeted = CodeMode.make({
+      tools,
+      discovery: { pinned: ["store.shop_products_get", "store.list_sites"], catalogBudget: 25 },
+    }).instructions()
+    expect(budgeted).not.toContain("tools.store.shop_products_get(")
+    expect(budgeted).toContain("tools.store.list_sites(")
+  })
+
+  test("indexes categories of tools that are present but not inlined", () => {
+    const instructions = CodeMode.make({
+      tools,
+      discovery: {
+        pinned: ["store.shop_products_get"],
+        categories: [
+          { namespace: "store", name: "shop_*", match: "^shop_", description: "products, collections" },
+          { namespace: "store", name: "figma_*", match: "^figma_", description: "files" },
+          { namespace: "store", name: "other", match: "^(?!shop_)", description: "sites, account" },
+        ],
+      },
+    }).instructions()
+
+    expect(instructions).toContain(
+      '  Not shown, by category (get exact signatures with tools.$codemode.search({ query, namespace: "store" })):\n  - shop_* (2): products, collections\n  - other (2): sites, account',
+    )
+    expect(instructions).not.toContain("figma_*")
+  })
+
+  test("omits a category whose tools are all inlined", () => {
+    const instructions = CodeMode.make({
+      tools,
+      discovery: {
+        pinned: ["web.fetch"],
+        categories: [{ namespace: "web", name: "fetch", match: "^fetch$", description: "pages" }],
+      },
+    }).instructions()
+    expect(instructions).not.toContain("Not shown, by category")
+  })
+
+  test("rejects an invalid pinnedLimit or category pattern", () => {
+    expect(() => CodeMode.make({ tools, discovery: { pinned: [], pinnedLimit: -1 } })).toThrow(RangeError)
+    expect(() =>
+      CodeMode.make({
+        tools,
+        discovery: { categories: [{ namespace: "store", name: "x", match: "(", description: "" }] },
+      }),
+    ).toThrow(SyntaxError)
+  })
+
+  test("matches the default catalog when discovery options are empty", () => {
+    expect(CodeMode.make({ tools }).instructions()).toBe(CodeMode.make({ tools, discovery: {} }).instructions())
+    expect(CodeMode.make({ tools }).instructions()).toContain("COMPLETE list")
+  })
+})

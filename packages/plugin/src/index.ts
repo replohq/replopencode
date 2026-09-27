@@ -331,5 +331,23 @@ export interface Hooks {
   /**
    * Modify tool definitions (description and parameters) sent to LLM
    */
-  "tool.definition"?: (input: { toolID: string }, output: { description: string; parameters: any }) => Promise<void>
+  "tool.definition"?: (
+    input: { toolID: string },
+    output: {
+      description: string
+      parameters: any
+      /**
+       * `execute` only: how its MCP tool catalog is inlined. `pinned` tool paths
+       * (`namespace.tool`, most important first; order is kept within each namespace) replace
+       * the default selection of cheapest signatures round-robin across namespaces;
+       * `categories` index tools that are present but not inlined.
+       */
+      discovery?: {
+        catalogBudget?: number
+        pinned?: string[]
+        pinnedLimit?: number
+        categories?: { namespace: string; name: string; match: string; description: string }[]
+      }
+    },
+  ) => Promise<void>
 }

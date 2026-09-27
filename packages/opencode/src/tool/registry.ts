@@ -54,6 +54,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import type { CodeMode } from "@opencode-ai/codemode"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -301,12 +302,23 @@ const layer = Layer.effect(
     const describeCodeMode = Effect.fn("ToolRegistry.describeCodeMode")(function* (input: {
       agent: Agent.Info
       permission?: PermissionV1.Ruleset
+      discovery?: CodeMode.DiscoveryOptions
     }) {
       if (!codeMode) return
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
       const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
       if (Object.keys(tools).length === 0) return
-      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize))
+      const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
+      const discovery = input.discovery
+      if (!discovery) return codeMode.describeCatalog(tools, servers)
+      // Plugin-supplied options are data from outside opencode; a bad pattern must not remove execute.
+      return yield* Effect.try({
+        try: () => codeMode.describeCatalog(tools, servers, discovery),
+        catch: (error) => String(error),
+      }).pipe(
+        Effect.tapError((error) => Effect.logWarning("ignoring invalid execute discovery options", { error })),
+        Effect.orElseSucceed(() => codeMode.describeCatalog(tools, servers)),
+      )
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
@@ -331,12 +343,21 @@ const layer = Layer.effect(
       return yield* Effect.forEach(
         visible,
         Effect.fnUntraced(function* (tool: Tool.Def) {
-          const output = {
+          const output: {
+            description: string
+            parameters: Tool.Def["parameters"]
+            jsonSchema: Tool.Def["jsonSchema"]
+            discovery?: CodeMode.DiscoveryOptions
+          } = {
             description: tool.description,
             parameters: tool.parameters,
             jsonSchema: tool.jsonSchema,
           }
           yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          const executeDescription =
+            tool.id === "execute" && output.discovery
+              ? ((yield* describeCodeMode({ ...input, discovery: output.discovery })) ?? codeModeDescription)
+              : codeModeDescription
           const jsonSchema =
             output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
               ? output.jsonSchema
@@ -346,7 +367,7 @@ const layer = Layer.effect(
             description: [
               output.description,
               tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined,
-              tool.id === "execute" ? codeModeDescription : undefined,
+              tool.id === "execute" ? executeDescription : undefined,
             ]
               .filter(Boolean)
               .join("\n"),

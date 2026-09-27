@@ -17,7 +17,7 @@ export type ExecutionLimits = {
 }
 
 /** Controls how much of the tool catalog is inlined in agent instructions. */
-export type DiscoveryOptions = {
+export type DiscoveryOptions = ToolRuntime.CatalogSelection & {
   /** Approximate token budget (chars/4, default 2000) for full catalog entries. */
   readonly catalogBudget?: number
 }
@@ -149,7 +149,7 @@ export const make = <const Tools extends Record<string, unknown> = {}>(
   const tools = (options.tools ?? {}) as HostTools<Services<Tools>>
   ToolRuntime.assertValidTools(tools)
   const limits = resolveExecutionLimits(options.limits)
-  const prepared = ToolRuntime.prepare(tools, options.discovery?.catalogBudget)
+  const prepared = ToolRuntime.prepare(tools, options.discovery?.catalogBudget, options.discovery)
 
   return {
     catalog: () => prepared.catalog,

@@ -147,13 +147,23 @@ const withCodeModeDiscovery = (discovery: unknown) =>
       [Plugin.node, discoveryPluginLayer(discovery)],
     ]),
   )
-const withFeaturedCatalog = withCodeModeDiscovery({
-  featured: ["weather.forecast_hourly"],
-  families: [{ namespace: "weather", label: "current*", match: "^current", summary: "conditions now" }],
+const withPinnedCatalog = withCodeModeDiscovery({
+  pinned: ["weather.forecast_hourly"],
+  categories: [{ namespace: "weather", name: "current*", match: "^current", description: "conditions now" }],
 })
 const withInvalidDiscovery = withCodeModeDiscovery({
-  featured: ["weather.forecast_hourly"],
-  families: [{ namespace: "weather", label: "x", match: "(", summary: "" }],
+  pinned: ["weather.forecast_hourly"],
+  categories: [{ namespace: "weather", name: "x", match: "(", description: "" }],
+})
+const executeDescription = Effect.gen(function* () {
+  const registry = yield* ToolRegistry.Service
+  const agents = yield* Agent.Service
+  const tools = yield* registry.tools({
+    providerID: ProviderV2.ID.opencode,
+    modelID: ModelV2.ID.make("test"),
+    agent: yield* agents.defaultInfo(),
+  })
+  return tools.find((tool) => tool.id === "execute")?.description ?? ""
 })
 
 afterEach(async () => {
@@ -197,16 +207,9 @@ describe("tool.registry", () => {
     }),
   )
 
-  withFeaturedCatalog.instance("lets a tool.definition hook rank execute's catalog", () =>
+  withPinnedCatalog.instance("lets a tool.definition hook rank execute's catalog", () =>
     Effect.gen(function* () {
-      const registry = yield* ToolRegistry.Service
-      const agents = yield* Agent.Service
-      const tools = yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
-        modelID: ModelV2.ID.make("test"),
-        agent: yield* agents.defaultInfo(),
-      })
-      const description = tools.find((tool) => tool.id === "execute")?.description ?? ""
+      const description = yield* executeDescription
 
       expect(description.startsWith("Guidance first.\n")).toBe(true)
       expect(description).toContain("PARTIAL - 1 of 2 shown")
@@ -218,14 +221,7 @@ describe("tool.registry", () => {
 
   withInvalidDiscovery.instance("falls back to the default catalog when hook discovery options are invalid", () =>
     Effect.gen(function* () {
-      const registry = yield* ToolRegistry.Service
-      const agents = yield* Agent.Service
-      const tools = yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
-        modelID: ModelV2.ID.make("test"),
-        agent: yield* agents.defaultInfo(),
-      })
-      const description = tools.find((tool) => tool.id === "execute")?.description ?? ""
+      const description = yield* executeDescription
 
       expect(description).toContain("COMPLETE list")
       expect(description).toContain("tools.weather.current(input: {")

@@ -343,24 +343,24 @@ export const catalog = <R>(tools: HostTools<R>): ReadonlyArray<ToolDescription> 
   visibleDefinitions(tools).map(({ description }) => description)
 
 /**
- * A compact index entry for tools that are not inlined: `match` is a RegExp source tested
+ * A one-line index entry for tools that are not inlined: `match` is a RegExp source tested
  * against the tool name within `namespace`. An entry is listed only while at least one
  * matching tool is present and not inlined, so it never advertises an absent tool.
  */
-export type CatalogFamily = {
+export type CatalogCategory = {
   readonly namespace: string
-  readonly label: string
+  readonly name: string
   readonly match: string
-  readonly summary: string
+  readonly description: string
 }
 
 /** Caller-ranked selection for the inlined catalog. */
 export type CatalogSelection = {
   /** Tool paths (`namespace.tool`), most important first. When set, only these are inlined. */
-  readonly featured?: ReadonlyArray<string>
-  /** Maximum number of featured tools inlined. Default: as many as fit the budget. */
-  readonly featuredLimit?: number
-  readonly families?: ReadonlyArray<CatalogFamily>
+  readonly pinned?: ReadonlyArray<string>
+  /** Maximum number of pinned tools inlined. Default: as many as fit the budget. */
+  readonly pinnedLimit?: number
+  readonly categories?: ReadonlyArray<CatalogCategory>
 }
 
 export type DiscoveryPlan = {
@@ -541,18 +541,18 @@ const selectRoundRobin = (
   )
 }
 
-/** Caller-ranked selection: featured paths in order, skipping absent tools and lines that do not fit. */
-const selectFeatured = (
+/** Caller-ranked selection: pinned paths in order, skipping absent tools and lines that do not fit. */
+const selectPinned = (
   described: ReadonlyArray<ToolDescription>,
-  featured: ReadonlyArray<string>,
-  featuredLimit: number,
+  pinned: ReadonlyArray<string>,
+  pinnedLimit: number,
   catalogBudget: number,
 ): ReadonlyMap<string, ReadonlyArray<ToolDescription>> => {
   const byPath = new Map(described.map((tool) => [tool.path, tool]))
   const picked = new Set<ToolDescription>()
   let used = 0
-  for (const path of featured) {
-    if (picked.size >= featuredLimit) break
+  for (const path of pinned) {
+    if (picked.size >= pinnedLimit) break
     const tool = byPath.get(path)
     if (tool === undefined || picked.has(tool)) continue
     const cost = estimateTokens(catalogLine(tool))
@@ -579,10 +579,10 @@ const selectFeatured = (
  * namespace. Namespace stub lines are never budgeted: every namespace appears with its
  * tool count even at budget 0.
  *
- * With `selection.featured`, the caller's ranking replaces the round-robin: featured tools
- * that exist are inlined in that order until `featuredLimit` or the budget is reached, and
- * nothing else is inlined. `selection.families` adds an unbudgeted one-line index per family
- * of tools that are present but not inlined, so every family stays discoverable by search.
+ * With `selection.pinned`, the caller's ranking replaces the round-robin: pinned tools
+ * that exist are inlined in that order until `pinnedLimit` or the budget is reached, and
+ * nothing else is inlined. `selection.categories` adds an unbudgeted one-line index per
+ * category of tools that are present but not inlined, so every category stays discoverable by search.
  */
 export const prepare = <R>(
   tools: HostTools<R>,
@@ -592,11 +592,14 @@ export const prepare = <R>(
   if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
     throw new RangeError("discovery.catalogBudget must be a non-negative safe integer")
   }
-  const featuredLimit = selection.featuredLimit ?? Number.MAX_SAFE_INTEGER
-  if (!Number.isSafeInteger(featuredLimit) || featuredLimit < 0) {
-    throw new RangeError("discovery.featuredLimit must be a non-negative safe integer")
+  const pinnedLimit = selection.pinnedLimit ?? Number.MAX_SAFE_INTEGER
+  if (!Number.isSafeInteger(pinnedLimit) || pinnedLimit < 0) {
+    throw new RangeError("discovery.pinnedLimit must be a non-negative safe integer")
   }
-  const families = (selection.families ?? []).map((family) => ({ ...family, pattern: new RegExp(family.match) }))
+  const categories = (selection.categories ?? []).map((category) => ({
+    ...category,
+    pattern: new RegExp(category.match),
+  }))
   const visible = visibleDefinitions(tools)
   const described = visible.map(({ description }) => description)
 
@@ -612,9 +615,9 @@ export const prepare = <R>(
   // Select which signatures fit the budget before emitting, so the list can state
   // exactly how comprehensive it is.
   const shown =
-    selection.featured === undefined
+    selection.pinned === undefined
       ? selectRoundRobin(ordered, catalogBudget)
-      : selectFeatured(described, selection.featured, featuredLimit, catalogBudget)
+      : selectPinned(described, selection.pinned, pinnedLimit, catalogBudget)
   const totalShown = [...shown.values()].reduce((total, picked) => total + picked.length, 0)
   const complete = totalShown === described.length
 
@@ -711,16 +714,16 @@ export const prepare = <R>(
       const hiddenNames = group
         .filter((tool) => !picked.includes(tool))
         .map((tool) => tool.path.slice(namespace.length + 1))
-      const familyLines = families
-        .filter((family) => family.namespace === namespace)
-        .flatMap((family) => {
-          const matching = hiddenNames.filter((name) => family.pattern.test(name)).length
-          return matching === 0 ? [] : [`  - ${family.label} (${matching}): ${family.summary}`]
+      const categoryLines = categories
+        .filter((category) => category.namespace === namespace)
+        .flatMap((category) => {
+          const matching = hiddenNames.filter((name) => category.pattern.test(name)).length
+          return matching === 0 ? [] : [`  - ${category.name} (${matching}): ${category.description}`]
         })
-      if (familyLines.length > 0) {
+      if (categoryLines.length > 0) {
         toolSection.push(
-          `  Not shown, by family (get exact signatures with tools.$codemode.search({ query, namespace: ${JSON.stringify(namespace)} })):`,
-          ...familyLines,
+          `  Not shown, by category (get exact signatures with tools.$codemode.search({ query, namespace: ${JSON.stringify(namespace)} })):`,
+          ...categoryLines,
         )
       }
     }

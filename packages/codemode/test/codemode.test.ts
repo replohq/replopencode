@@ -1201,7 +1201,7 @@ describe("CodeMode public contract", () => {
   })
 })
 
-describe("CodeMode featured catalog", () => {
+describe("CodeMode pinned catalog", () => {
   const make = (description: string) =>
     Tool.make({
       description,
@@ -1220,10 +1220,10 @@ describe("CodeMode featured catalog", () => {
     web: { fetch: make("Fetch a page") },
   }
 
-  test("inlines only featured tools, in the caller's order, skipping absent paths", () => {
+  test("inlines only pinned tools, in the caller's order, skipping absent paths", () => {
     const instructions = CodeMode.make({
       tools,
-      discovery: { featured: ["store.shop_products_get", "store.missing", "store.list_sites"] },
+      discovery: { pinned: ["store.shop_products_get", "store.missing", "store.list_sites"] },
     }).instructions()
 
     expect(instructions).toContain(
@@ -1238,60 +1238,63 @@ describe("CodeMode featured catalog", () => {
     expect(instructions).not.toContain("tools.web.fetch(")
   })
 
-  test("caps featured tools at featuredLimit and the budget", () => {
+  test("caps pinned tools at pinnedLimit and the budget", () => {
     const limited = CodeMode.make({
       tools,
-      discovery: { featured: ["store.get_account", "store.list_sites", "web.fetch"], featuredLimit: 2 },
+      discovery: { pinned: ["store.get_account", "store.list_sites", "web.fetch"], pinnedLimit: 2 },
     }).instructions()
     expect(limited).toContain("PARTIAL - 2 of 6 shown")
     expect(limited).not.toContain("tools.web.fetch(")
 
     const budgeted = CodeMode.make({
       tools,
-      discovery: { featured: ["store.shop_products_get", "store.list_sites"], catalogBudget: 25 },
+      discovery: { pinned: ["store.shop_products_get", "store.list_sites"], catalogBudget: 25 },
     }).instructions()
     expect(budgeted).not.toContain("tools.store.shop_products_get(")
     expect(budgeted).toContain("tools.store.list_sites(")
   })
 
-  test("indexes families of tools that are present but not inlined", () => {
+  test("indexes categories of tools that are present but not inlined", () => {
     const instructions = CodeMode.make({
       tools,
       discovery: {
-        featured: ["store.shop_products_get"],
-        families: [
-          { namespace: "store", label: "shop_*", match: "^shop_", summary: "products, collections" },
-          { namespace: "store", label: "figma_*", match: "^figma_", summary: "files" },
-          { namespace: "store", label: "other", match: "^(?!shop_)", summary: "sites, account" },
+        pinned: ["store.shop_products_get"],
+        categories: [
+          { namespace: "store", name: "shop_*", match: "^shop_", description: "products, collections" },
+          { namespace: "store", name: "figma_*", match: "^figma_", description: "files" },
+          { namespace: "store", name: "other", match: "^(?!shop_)", description: "sites, account" },
         ],
       },
     }).instructions()
 
     expect(instructions).toContain(
-      '  Not shown, by family (get exact signatures with tools.$codemode.search({ query, namespace: "store" })):\n  - shop_* (2): products, collections\n  - other (2): sites, account',
+      '  Not shown, by category (get exact signatures with tools.$codemode.search({ query, namespace: "store" })):\n  - shop_* (2): products, collections\n  - other (2): sites, account',
     )
     expect(instructions).not.toContain("figma_*")
   })
 
-  test("omits a family whose tools are all inlined", () => {
+  test("omits a category whose tools are all inlined", () => {
     const instructions = CodeMode.make({
       tools,
       discovery: {
-        featured: ["web.fetch"],
-        families: [{ namespace: "web", label: "fetch", match: "^fetch$", summary: "pages" }],
+        pinned: ["web.fetch"],
+        categories: [{ namespace: "web", name: "fetch", match: "^fetch$", description: "pages" }],
       },
     }).instructions()
-    expect(instructions).not.toContain("Not shown, by family")
+    expect(instructions).not.toContain("Not shown, by category")
   })
 
-  test("rejects an invalid featuredLimit or family pattern", () => {
-    expect(() => CodeMode.make({ tools, discovery: { featured: [], featuredLimit: -1 } })).toThrow(RangeError)
+  test("rejects an invalid pinnedLimit or family pattern", () => {
+    expect(() => CodeMode.make({ tools, discovery: { pinned: [], pinnedLimit: -1 } })).toThrow(RangeError)
     expect(() =>
-      CodeMode.make({ tools, discovery: { families: [{ namespace: "store", label: "x", match: "(", summary: "" }] } }),
+      CodeMode.make({
+        tools,
+        discovery: { categories: [{ namespace: "store", name: "x", match: "(", description: "" }] },
+      }),
     ).toThrow(SyntaxError)
   })
 
-  test("keeps length-ordered selection when nothing is featured", () => {
+  test("keeps length-ordered selection when nothing is pinned", () => {
     expect(CodeMode.make({ tools }).instructions()).toBe(CodeMode.make({ tools, discovery: {} }).instructions())
     expect(CodeMode.make({ tools }).instructions()).toContain("COMPLETE list")
   })

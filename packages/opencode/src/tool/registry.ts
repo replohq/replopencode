@@ -56,8 +56,6 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import type { CodeMode } from "@opencode-ai/codemode"
 
-type CodeModeDiscovery = CodeMode.DiscoveryOptions
-
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
     providerID === ProviderV2.ID.opencode ||
@@ -304,16 +302,16 @@ const layer = Layer.effect(
     const describeCodeMode = Effect.fn("ToolRegistry.describeCodeMode")(function* (input: {
       agent: Agent.Info
       permission?: PermissionV1.Ruleset
-      discovery?: CodeModeDiscovery
+      discovery?: CodeMode.DiscoveryOptions
     }) {
       if (!codeMode) return
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
       const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
       if (Object.keys(tools).length === 0) return
       const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
-      if (input.discovery) {
+      const discovery = input.discovery
+      if (discovery) {
         // Plugin-supplied options are data from outside opencode; a bad pattern must not remove execute.
-        const discovery = input.discovery
         const described = yield* Effect.try({
           try: () => codeMode.describeCatalog(tools, servers, discovery),
           catch: (error) => String(error),
@@ -352,7 +350,7 @@ const layer = Layer.effect(
             description: string
             parameters: Tool.Def["parameters"]
             jsonSchema: Tool.Def["jsonSchema"]
-            discovery?: CodeModeDiscovery
+            discovery?: CodeMode.DiscoveryOptions
           } = {
             description: tool.description,
             parameters: tool.parameters,

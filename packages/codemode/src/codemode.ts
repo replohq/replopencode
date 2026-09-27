@@ -4,14 +4,7 @@ import { type HostTools, type Services, type ToolDescription, ToolRuntime } from
 import type { Definition } from "./tool.js"
 
 /** A tool call admitted during an execution. */
-export type {
-  CatalogFamily,
-  ToolCall,
-  ToolCallEnded,
-  ToolCallHooks,
-  ToolCallStarted,
-  ToolDescription,
-} from "./tool-runtime.js"
+export type { ToolCall, ToolCallEnded, ToolCallHooks, ToolCallStarted, ToolDescription } from "./tool-runtime.js"
 
 /** Resource budgets enforced independently during each CodeMode program execution. */
 export type ExecutionLimits = {

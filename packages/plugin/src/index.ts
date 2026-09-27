@@ -337,15 +337,15 @@ export interface Hooks {
       description: string
       parameters: any
       /**
-       * `execute` only: how its MCP tool catalog is inlined. `featured` tool paths
+       * `execute` only: how its MCP tool catalog is inlined. `pinned` tool paths
        * (`namespace.tool`, most important first) replace the length-ordered selection;
-       * `families` index tools that are present but not inlined.
+       * `categories` index tools that are present but not inlined.
        */
       discovery?: {
         catalogBudget?: number
-        featured?: string[]
-        featuredLimit?: number
-        families?: { namespace: string; label: string; match: string; summary: string }[]
+        pinned?: string[]
+        pinnedLimit?: number
+        categories?: { namespace: string; name: string; match: string; description: string }[]
       }
     },
   ) => Promise<void>

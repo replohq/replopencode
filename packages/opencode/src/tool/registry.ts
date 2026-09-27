@@ -310,18 +310,15 @@ const layer = Layer.effect(
       if (Object.keys(tools).length === 0) return
       const servers = Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize)
       const discovery = input.discovery
-      if (discovery) {
-        // Plugin-supplied options are data from outside opencode; a bad pattern must not remove execute.
-        const described = yield* Effect.try({
-          try: () => codeMode.describeCatalog(tools, servers, discovery),
-          catch: (error) => String(error),
-        }).pipe(
-          Effect.tapError((error) => Effect.logWarning("ignoring invalid execute discovery options", { error })),
-          Effect.option,
-        )
-        if (described._tag === "Some") return described.value
-      }
-      return codeMode.describeCatalog(tools, servers)
+      if (!discovery) return codeMode.describeCatalog(tools, servers)
+      // Plugin-supplied options are data from outside opencode; a bad pattern must not remove execute.
+      return yield* Effect.try({
+        try: () => codeMode.describeCatalog(tools, servers, discovery),
+        catch: (error) => String(error),
+      }).pipe(
+        Effect.tapError((error) => Effect.logWarning("ignoring invalid execute discovery options", { error })),
+        Effect.orElseSucceed(() => codeMode.describeCatalog(tools, servers)),
+      )
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {

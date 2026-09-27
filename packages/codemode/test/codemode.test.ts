@@ -1284,7 +1284,7 @@ describe("CodeMode pinned catalog", () => {
     expect(instructions).not.toContain("Not shown, by category")
   })
 
-  test("rejects an invalid pinnedLimit or family pattern", () => {
+  test("rejects an invalid pinnedLimit or category pattern", () => {
     expect(() => CodeMode.make({ tools, discovery: { pinned: [], pinnedLimit: -1 } })).toThrow(RangeError)
     expect(() =>
       CodeMode.make({
@@ -1294,7 +1294,7 @@ describe("CodeMode pinned catalog", () => {
     ).toThrow(SyntaxError)
   })
 
-  test("keeps length-ordered selection when nothing is pinned", () => {
+  test("matches the default catalog when discovery options are empty", () => {
     expect(CodeMode.make({ tools }).instructions()).toBe(CodeMode.make({ tools, discovery: {} }).instructions())
     expect(CodeMode.make({ tools }).instructions()).toContain("COMPLETE list")
   })

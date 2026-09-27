@@ -356,7 +356,7 @@ export type CatalogCategory = {
 
 /** Caller-ranked selection for the inlined catalog. */
 export type CatalogSelection = {
-  /** Tool paths (`namespace.tool`), most important first. When set, only these are inlined. */
+  /** Tool paths (`namespace.tool`), most important first; order is kept within each namespace. When set, only these are inlined. */
   readonly pinned?: ReadonlyArray<string>
   /** Maximum number of pinned tools inlined. Default: as many as fit the budget. */
   readonly pinnedLimit?: number

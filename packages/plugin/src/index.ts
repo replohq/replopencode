@@ -338,7 +338,8 @@ export interface Hooks {
       parameters: any
       /**
        * `execute` only: how its MCP tool catalog is inlined. `pinned` tool paths
-       * (`namespace.tool`, most important first) replace the length-ordered selection;
+       * (`namespace.tool`, most important first; order is kept within each namespace) replace
+       * the default selection of cheapest signatures round-robin across namespaces;
        * `categories` index tools that are present but not inlined.
        */
       discovery?: {

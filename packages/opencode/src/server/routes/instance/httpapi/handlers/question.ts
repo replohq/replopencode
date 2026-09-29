@@ -1,5 +1,5 @@
 import { Question } from "@/question"
-import { resumeOrphanedReply } from "@/question/resume"
+import { resumeOrphanedQuestion } from "@/question/resume"
 import { QuestionID } from "@/question/schema"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -36,7 +36,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
           ),
         )
       if (result.outcome === "orphaned") {
-        yield* resumeOrphanedReply({ request: result.request, answers: ctx.payload.answers }).pipe(
+        yield* resumeOrphanedQuestion({ request: result.request, type: "reply", answers: ctx.payload.answers }).pipe(
           Effect.catchCause((cause) =>
             Effect.logError("question resume failed", { requestID: ctx.params.requestID, cause }),
           ),
@@ -67,7 +67,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     })
 
     const reject = Effect.fn("QuestionHttpApi.reject")(function* (ctx: { params: { requestID: QuestionID } }) {
-      yield* svc.reject(ctx.params.requestID).pipe(
+      const result = yield* svc.reject(ctx.params.requestID).pipe(
         Effect.catchTag("Question.NotFoundError", (error) =>
           Effect.fail(
             new QuestionNotFoundError({
@@ -77,6 +77,14 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
           ),
         ),
       )
+      if (result.outcome === "orphaned") {
+        yield* resumeOrphanedQuestion({ request: result.request, type: "reject" }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("question resume failed", { requestID: ctx.params.requestID, cause }),
+          ),
+          Effect.forkIn(scope),
+        )
+      }
       return true
     })
 

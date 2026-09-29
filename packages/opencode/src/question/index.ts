@@ -55,7 +55,7 @@ interface State {
   pending: Map<QuestionID, PendingEntry>
 }
 
-export type ReplyOutcome =
+export type ResolutionOutcome =
   | { readonly outcome: "resolved" }
   | { readonly outcome: "orphaned"; readonly request: Request }
 
@@ -76,13 +76,13 @@ export interface Interface {
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<ReplyOutcome, NotFoundError>
+  }) => Effect.Effect<ResolutionOutcome, NotFoundError>
   readonly saveProgress: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
   }) => Effect.Effect<void, NotFoundError | InvalidProgressError>
-  readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
-  readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
+  readonly reject: (requestID: QuestionID) => Effect.Effect<ResolutionOutcome, NotFoundError>
+  readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<ReadonlyArray<ResolutionOutcome>>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -246,9 +246,12 @@ const layer = Layer.effect(
       })
       const pending = (yield* InstanceState.get(state)).pending
       const existing = pending.get(row.id)
-      if (!existing) return
+      if (!existing) return { outcome: "orphaned", request: rowToRequest(row) } as const
       pending.delete(row.id)
-      yield* Deferred.fail(existing.deferred, new RejectedError())
+      const delivered = yield* Deferred.fail(existing.deferred, new RejectedError())
+      return delivered
+        ? ({ outcome: "resolved" } as const)
+        : ({ outcome: "orphaned", request: rowToRequest(row) } as const)
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
@@ -257,7 +260,7 @@ const layer = Layer.effect(
         yield* Effect.logWarning("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      yield* rejectClaimed(row)
+      return yield* rejectClaimed(row)
     })
 
     const rejectAllForSession = Effect.fn("Question.rejectAllForSession")(function* (sessionID: SessionID) {
@@ -267,7 +270,7 @@ const layer = Layer.effect(
         .returning()
         .all()
         .pipe(Effect.orDie)
-      yield* Effect.forEach(rows, rejectClaimed, { discard: true })
+      return yield* Effect.forEach(rows, rejectClaimed)
     })
 
     const list = Effect.fn("Question.list")(function* () {

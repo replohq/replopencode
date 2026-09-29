@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
-import { MessageTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageTable, QuestionRequestTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { and, eq, sql } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
@@ -15,11 +15,11 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRecovery") {}
 
-// Only one opencode process serves a sandbox and a turn's run loop lives in that process, so at
-// instance boot every assistant message without a completion time is provably dead. Finish it the
-// way an abort would. No session.error is published here: a client that keys "no reply yet" off
-// the first assistant message can race it, and the coordinator already derives the terminal event
-// from a completed errored message when it replays the session after a restart.
+export const RESTART_ERROR_MESSAGE = "The agent restarted before it could finish this turn. Send your message again."
+
+// Persisted questions can still be answered after the process dies; other unfinished work cannot.
+// The coordinator derives terminal events from repaired messages during replay. Publishing
+// session.error here would race clients that key "no reply yet" off the first assistant message.
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -55,7 +55,26 @@ const layer = Layer.effect(
       const { info, parts } = yield* MessageV2.get({ sessionID: row.sessionID, messageID: row.id }).pipe(
         Effect.provideService(Database.Service, database),
       )
-      if (info.role !== "assistant") return
+      if (info.role !== "assistant" || info.time.completed) return
+      const unfinished = parts.filter(
+        (part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
+      )
+      if (unfinished.length > 0 && unfinished.every((part) => part.type === "tool" && part.tool === "question")) {
+        const requests = yield* database.db
+          .select({ data: QuestionRequestTable.data })
+          .from(QuestionRequestTable)
+          .where(eq(QuestionRequestTable.session_id, row.sessionID))
+          .all()
+          .pipe(Effect.orDie)
+        if (
+          unfinished.every(
+            (part) =>
+              part.type === "tool" &&
+              requests.some(({ data }) => data.tool?.messageID === row.id && data.tool.callID === part.callID),
+          )
+        )
+          return
+      }
       const end = Date.now()
       for (const part of parts) {
         if (part.type !== "tool" || part.state.status === "completed" || part.state.status === "error") continue
@@ -72,7 +91,7 @@ const layer = Layer.effect(
         })
       }
       info.error = new NamedError.Unknown({
-        message: "The agent restarted before it could finish this turn. Send your message again.",
+        message: RESTART_ERROR_MESSAGE,
       }).toObject()
       info.time.completed = end
       yield* sessions.updateMessage(info)

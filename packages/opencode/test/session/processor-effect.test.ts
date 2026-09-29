@@ -222,6 +222,29 @@ const providerErrorLLM = Layer.succeed(
 const providerErrorEnv = LayerNode.compile(root, [...replacements, [LLM.node, providerErrorLLM]])
 const itProviderError = testEffect(providerErrorEnv)
 
+const lateToolInputLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-1", name: "lookup" }),
+        LLMEvent.toolCall({ id: "call-1", name: "lookup", input: {}, providerExecuted: true }),
+        LLMEvent.toolResult({
+          id: "call-1",
+          name: "lookup",
+          result: { type: "text", value: "done" },
+          providerExecuted: true,
+        }),
+        LLMEvent.toolInputEnd({ id: "call-1", name: "unknown" }),
+        LLMEvent.toolCall({ id: "call-1", name: "lookup", input: {}, providerExecuted: true }),
+        LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+        LLMEvent.finish({ reason: "tool-calls" }),
+      ),
+  }),
+)
+const itLateToolInput = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, lateToolInputLLM]]))
+
 const fragmentFailureLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -258,6 +281,13 @@ const relayedOutageLLM = Layer.succeed(
             LLMEvent.textStart({ id: "text-2" }),
             LLMEvent.textDelta({ id: "text-2", text: "hello" }),
             LLMEvent.textEnd({ id: "text-2" }),
+            LLMEvent.toolCall({ id: "call-dead", name: "lookup", input: {}, providerExecuted: true }),
+            LLMEvent.toolResult({
+              id: "call-dead",
+              name: "lookup",
+              result: { type: "text", value: "done" },
+              providerExecuted: true,
+            }),
             LLMEvent.stepFinish({ index: 0, reason: "stop" }),
             LLMEvent.finish({ reason: "stop" }),
           ),
@@ -1316,6 +1346,45 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
   ),
 )
 
+itLateToolInput.live("session.processor effect tests ignore tool input that arrives after the call settled", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "late tool input")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "late tool input" }],
+          convert: unconverted,
+          tools: {},
+        })
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const calls = parts.filter((part): part is SessionV1.ToolPart => part.type === "tool")
+        expect(calls.map((part) => [part.callID, part.tool, part.state.status])).toEqual([
+          ["call-1", "lookup", "completed"],
+        ])
+      }),
+    { config: cfg },
+  ),
+)
+
 itFragmentFailure.live("session.processor effect tests retain partial legacy parts without v2 events", () =>
   provideTmpdirInstance(
     (dir) =>
@@ -1414,7 +1483,10 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
 
         expect(value).toBe("continue")
-        expect(parts.filter((part) => part.type === "reasoning" || part.type === "tool")).toEqual([])
+        expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
+        expect(
+          parts.flatMap((part) => (part.type === "tool" ? [[part.callID, part.tool, part.state.status]] : [])),
+        ).toEqual([["call-dead", "lookup", "completed"]])
         expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
       }),

@@ -92,6 +92,7 @@ interface ProcessorContext extends Input {
   snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   fallbacks: number
+  settledToolCalls: Set<string>
 }
 
 type StreamEvent = LLMEvent
@@ -133,6 +134,7 @@ const layer = Layer.effect(
         firstRequestStartAt: undefined,
         reasoningMap: {},
         fallbacks: 0,
+        settledToolCalls: new Set(),
       }
       let aborted = false
 
@@ -171,6 +173,7 @@ const layer = Layer.effect(
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
         delete ctx.toolcalls[toolCallID]
+        ctx.settledToolCalls.add(toolCallID)
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
 
@@ -266,6 +269,8 @@ const layer = Layer.effect(
         name: string
         providerExecuted?: boolean
       }) {
+        // Some streams send input events after the result; a new part would duplicate the call id.
+        if (ctx.settledToolCalls.has(input.id)) return
         const existing = yield* readToolCall(input.id)
         if (existing) {
           if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
@@ -381,7 +386,7 @@ const layer = Layer.effect(
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
-            yield* ensureToolCall(value)
+            if (!(yield* ensureToolCall(value))) return
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
@@ -734,7 +739,7 @@ const layer = Layer.effect(
               ),
               (part) =>
                 Effect.gen(function* () {
-                  if (part.type === "tool") yield* settleToolCall(part.callID)
+                  if (part.type === "tool") delete ctx.toolcalls[part.callID]
                   yield* session.removePart({
                     sessionID: ctx.sessionID,
                     messageID: ctx.assistantMessage.id,

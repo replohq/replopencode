@@ -1491,6 +1491,20 @@ const scenarios: Scenario[] = [
       check(body === true, "missing session abort should remain a no-op success")
     }),
   http.protected
+    .post("/session/{sessionID}/prompt/{messageId}/abort", "session.abortPrompt")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Abort stale prompt" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/prompt/{messageId}/abort", {
+        sessionID: ctx.state.id,
+        messageId: "msg_httpapi_missing",
+      }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(body === false, "a stale prompt abort should leave the session untouched")
+    }),
+  http.protected
     .post("/session/{sessionID}/init", "session.init")
     .preserveDatabase()
     .withLlm()

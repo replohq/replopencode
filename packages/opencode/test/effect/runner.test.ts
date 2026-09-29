@@ -512,3 +512,39 @@ describe("Runner", () => {
     }),
   )
 })
+
+it.live(
+  "conditional cancellation cannot interrupt replacement work",
+  Effect.gen(function* () {
+    const scope = yield* Scope.Scope
+    const idleCalls = yield* Ref.make(0)
+    const runner = Runner.make<string>(scope, {
+      onInterrupt: Effect.succeed("cancelled"),
+      onIdle: Ref.update(idleCalls, (count) => count + 1),
+    })
+    const first = yield* runner.ensureRunning(Effect.never).pipe(Effect.forkChild)
+    yield* waitForState(runner, "Running")
+    expect(yield* runner.cancelIf(() => false)).toBe(false)
+    expect(runner.busy).toBe(true)
+    expect(yield* runner.cancelIf(() => true, { notifyIdle: false })).toBe(true)
+    expect(yield* Ref.get(idleCalls)).toBe(0)
+    expect(yield* Fiber.join(first)).toBe("cancelled")
+    const next = yield* runner.ensureRunning(Effect.never).pipe(Effect.forkChild)
+    yield* waitForState(runner, "Running")
+    expect(yield* runner.cancelIf(() => false)).toBe(false)
+    expect(runner.busy).toBe(true)
+    yield* runner.cancel
+    yield* Fiber.join(next)
+  }),
+)
+
+it.live(
+  "a cancelled prompt cannot start work after preparation finishes",
+  Effect.gen(function* () {
+    const scope = yield* Scope.Scope
+    const runner = Runner.make<string>(scope, { onInterrupt: Effect.succeed("cancelled") })
+    const result = yield* runner.ensureRunning(Effect.die("must not run"), () => false)
+    expect(result).toBe("cancelled")
+    expect(runner.busy).toBe(false)
+  }),
+)

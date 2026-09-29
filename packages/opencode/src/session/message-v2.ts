@@ -139,9 +139,6 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
-  // Anthropic rejects a request with a repeated tool_use id, and the same history
-  // is replayed every turn, so one duplicate part would fail the session for good.
-  const replayedToolCalls = new Set<string>()
   // Track media from tool results that need to be injected as user messages
   // for providers that don't support that media type in tool results.
   //
@@ -285,6 +282,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type !== "reasoning") return false
         return part.metadata?.anthropic?.signature != null
       })
+      // A repeated tool_use id fails the request, and the same history replays every turn.
+      const callIDs = new Set<string>()
       for (const part of msg.parts) {
         if (part.type === "text") {
           const text = part.text === "" && hasSignedReasoning ? " " : part.text
@@ -298,8 +297,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "step-start",
           })
-        if (part.type === "tool" && !replayedToolCalls.has(part.callID)) {
-          replayedToolCalls.add(part.callID)
+        if (part.type === "tool" && !callIDs.has(part.callID)) {
+          callIDs.add(part.callID)
           toolNames.add(part.tool)
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted

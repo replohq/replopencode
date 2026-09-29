@@ -236,7 +236,6 @@ const lateToolInputLLM = Layer.succeed(
           result: { type: "text", value: "done" },
           providerExecuted: true,
         }),
-        LLMEvent.toolInputDelta({ id: "call-1", name: "unknown", text: "" }),
         LLMEvent.toolInputEnd({ id: "call-1", name: "unknown" }),
         LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
         LLMEvent.finish({ reason: "tool-calls" }),

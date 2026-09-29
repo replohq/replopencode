@@ -92,7 +92,7 @@ interface ProcessorContext extends Input {
   snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   fallbacks: number
-  finishedToolCalls: Set<string>
+  settledToolCalls: Set<string>
 }
 
 type StreamEvent = LLMEvent
@@ -134,7 +134,7 @@ const layer = Layer.effect(
         firstRequestStartAt: undefined,
         reasoningMap: {},
         fallbacks: 0,
-        finishedToolCalls: new Set(),
+        settledToolCalls: new Set(),
       }
       let aborted = false
 
@@ -173,6 +173,7 @@ const layer = Layer.effect(
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
         delete ctx.toolcalls[toolCallID]
+        ctx.settledToolCalls.add(toolCallID)
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
 
@@ -230,7 +231,6 @@ const layer = Layer.effect(
             attachments: output.attachments,
           },
         })
-        ctx.finishedToolCalls.add(toolCallID)
         yield* settleToolCall(toolCallID)
       })
 
@@ -251,7 +251,6 @@ const layer = Layer.effect(
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
-        ctx.finishedToolCalls.add(toolCallID)
         yield* settleToolCall(toolCallID)
         return true
       })
@@ -270,10 +269,8 @@ const layer = Layer.effect(
         name: string
         providerExecuted?: boolean
       }) {
-        // Some provider streams send input events for a call after its result. A new
-        // part would replay as a second tool_use with the same id, which Anthropic
-        // rejects on every later turn of the session.
-        if (ctx.finishedToolCalls.has(input.id)) return undefined
+        // Some streams send input events after the result; a new part would duplicate the call id.
+        if (ctx.settledToolCalls.has(input.id)) return
         const existing = yield* readToolCall(input.id)
         if (existing) {
           if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing

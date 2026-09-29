@@ -1,47 +1,17 @@
-import { Effect, Option } from "effect"
-import { Session } from "@/session/session"
+import { Effect } from "effect"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionStatus } from "@/session/status"
-import { formatAnswerOutput } from "./format"
-import type { Answer, Request } from "."
+import { Question } from "."
+import { settleOrphanedQuestion, type OrphanedResolution } from "./settle"
 
-/** Completes a restart-orphaned question's tool call with the real answers and re-enters the assistant loop. */
-export const resumeOrphanedReply = Effect.fn("Question.resumeOrphanedReply")(function* (input: {
-  request: Request
-  answers: ReadonlyArray<Answer>
-}) {
-  const sessions = yield* Session.Service
+export const resumeOrphanedQuestion = Effect.fn("Question.resumeOrphanedQuestion")(function* (
+  input: OrphanedResolution & { type: "reply" | "reject" },
+) {
   const prompts = yield* SessionPrompt.Service
   const status = yield* SessionStatus.Service
-
-  const tool = input.request.tool
-  if (tool) {
-    const message = yield* sessions.findMessage(input.request.sessionID, (msg) => msg.info.id === tool.messageID)
-    const part = Option.isSome(message)
-      ? message.value.parts.find((candidate) => candidate.type === "tool" && candidate.callID === tool.callID)
-      : undefined
-    if (part && part.type === "tool" && part.state.status !== "completed") {
-      const started = "time" in part.state && part.state.time ? part.state.time.start : Date.now()
-      yield* sessions.updatePart({
-        ...part,
-        state: {
-          status: "completed",
-          input: part.state.input,
-          output: formatAnswerOutput({ questions: input.request.questions, answers: input.answers }),
-          title: `Asked ${input.request.questions.length} question${input.request.questions.length > 1 ? "s" : ""}`,
-          metadata: { answers: input.answers.map((answer) => [...answer]) },
-          time: { start: started, end: Date.now() },
-        },
-      })
-      // Boot recovery marked this turn as failed by the restart. An errored turn is dropped from
-      // model history, so the model would never see its own question or the answer and ask again.
-      const info = Option.isSome(message) ? message.value.info : undefined
-      if (info && info.role === "assistant" && info.error) {
-        const { error: _restartError, ...recovered } = info
-        yield* sessions.updateMessage({ ...recovered, finish: "tool-calls" })
-      }
-    }
-  }
+  const questions = yield* Question.Service
+  if (!(yield* settleOrphanedQuestion(input))) return
+  if ((yield* questions.list()).some((request) => request.sessionID === input.request.sessionID)) return
 
   const current = yield* status.get(input.request.sessionID)
   if (current.type !== "idle") {

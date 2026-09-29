@@ -34,6 +34,7 @@ import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { Question } from "@/question"
+import { settleOrphanedQuestion } from "@/question/settle"
 import { SessionStatus } from "./status"
 import { SessionFallback } from "./fallback"
 import { LLM } from "./llm"
@@ -158,7 +159,15 @@ const layer = Layer.effect(
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
       // Stop clears persisted question rows; process shutdown deliberately does not.
-      yield* questions.rejectAllForSession(sessionID)
+      const results = yield* questions.rejectAllForSession(sessionID)
+      for (const result of results) {
+        if (result.outcome === "orphaned") {
+          yield* settleOrphanedQuestion({ request: result.request, type: "cancel" }).pipe(
+            Effect.provideService(Session.Service, sessions),
+            Effect.orDie,
+          )
+        }
+      }
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {

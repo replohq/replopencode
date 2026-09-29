@@ -25,11 +25,11 @@ import { Image } from "../../src/image/image"
 
 import { Question } from "../../src/question"
 import { formatAnswerOutput } from "../../src/question/format"
-import { resumeOrphanedReply } from "../../src/question/resume"
+import { resumeOrphanedQuestion } from "../../src/question/resume"
 import { QuestionID } from "../../src/question/schema"
 import { Todo } from "../../src/session/todo"
 import { Session } from "@/session/session"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
+import { QuestionRequestTable, SessionMessageTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -2553,31 +2553,30 @@ noLLMServer.instance(
 
 // Orphaned question resume
 
-const questionRequest = (input: { sessionID: SessionID; messageID: MessageID; callID: string }): Question.Request => ({
-  id: QuestionID.ascending(),
-  sessionID: input.sessionID,
-  questions: [
-    {
-      question: "Resume me?",
-      header: "Resume",
-      options: [{ label: "Yes", description: "Yes" }],
-    },
-  ],
-  tool: { messageID: input.messageID, callID: input.callID },
-})
-
-const seedDanglingQuestion = Effect.fn("test.seedDanglingQuestion")(function* (input: {
-  sessionID: SessionID
-  messageID: MessageID
-  callID: string
-}) {
-  const sessions = yield* Session.Service
-  yield* sessions.updatePart({
-    id: PartID.ascending(),
-    messageID: input.messageID,
+const questionRequest = (input: { sessionID: SessionID; messageID: MessageID; callID: string }) =>
+  ({
+    id: QuestionID.ascending(),
     sessionID: input.sessionID,
+    questions: [
+      {
+        question: "Resume me?",
+        header: "Resume",
+        options: [{ label: "Yes", description: "Yes" }],
+      },
+    ],
+    tool: { messageID: input.messageID, callID: input.callID },
+  }) satisfies Question.Request
+
+const seedDanglingQuestion = Effect.fn("test.seedDanglingQuestion")(function* (
+  request: ReturnType<typeof questionRequest>,
+) {
+  const sessions = yield* Session.Service
+  return yield* sessions.updatePart({
+    id: PartID.ascending(),
+    messageID: request.tool.messageID,
+    sessionID: request.sessionID,
     type: "tool",
-    callID: input.callID,
+    callID: request.tool.callID,
     tool: "question",
     state: { status: "running", input: {}, time: { start: 1 } },
   })
@@ -2595,16 +2594,19 @@ it.instance("orphaned reply heals the dangling question part and re-enters the l
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
     const seeded = yield* seed(chat.id)
-    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* seedDanglingQuestion(request)
     yield* llm.text("resumed")
 
-    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
-    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+    yield* resumeOrphanedQuestion({ request, type: "reply", answers: [["Yes"]] })
 
     const part = yield* questionToolPart(chat.id, seeded.assistant.id)
     expect(part?.state.output).toBe(formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }))
     expect(part?.state.title).toBe("Asked 1 question")
     expect(part?.state.metadata).toEqual({ answers: [["Yes"]] })
+    const original = yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id)
+    const info = Option.getOrThrow(original).info
+    expect(info.role === "assistant" ? info.time.completed : undefined).toBeNumber()
     expect(yield* llm.hits).toHaveLength(1)
   }),
 )
@@ -2616,12 +2618,12 @@ it.instance("orphaned reply after a restart puts the answered question back in f
     const recovery = yield* SessionRecovery.Service
     const chat = yield* sessions.create({ title: "Pinned" })
     const seeded = yield* seed(chat.id)
-    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* seedDanglingQuestion(request)
     yield* recovery.init()
     yield* llm.text("resumed")
 
-    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
-    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+    yield* resumeOrphanedQuestion({ request, type: "reply", answers: [["Yes"]] })
 
     const message = yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id)
     const info = Option.getOrThrow(message).info
@@ -2646,11 +2648,11 @@ it.instance("orphaned reply resume completes the part but skips the loop while t
     const status = yield* SessionStatus.Service
     const chat = yield* sessions.create({ title: "Pinned" })
     const seeded = yield* seed(chat.id)
-    yield* seedDanglingQuestion({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* seedDanglingQuestion(request)
     yield* status.set(chat.id, { type: "busy" })
 
-    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
-    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+    yield* resumeOrphanedQuestion({ request, type: "reply", answers: [["Yes"]] })
 
     const part = yield* questionToolPart(chat.id, seeded.assistant.id)
     expect(part?.state.output).toBe(formatAnswerOutput({ questions: request.questions, answers: [["Yes"]] }))
@@ -2658,17 +2660,185 @@ it.instance("orphaned reply resume completes the part but skips the loop while t
   }),
 )
 
-it.instance("orphaned reply resume tolerates a missing tool part and still re-enters the loop", () =>
+for (const invalid of ["unlinked", "message", "user", "call", "tool", "completed", "error"] as const) {
+  it.instance(`orphaned reply leaves ${invalid} question state untouched`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const seeded = yield* seed(chat.id)
+      const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+      const part = yield* seedDanglingQuestion(request)
+      if (invalid === "message") request.tool.messageID = MessageID.ascending()
+      if (invalid === "user") request.tool.messageID = seeded.user.id
+      if (invalid === "call") request.tool.callID = "missing"
+      if (invalid === "tool") yield* sessions.updatePart({ ...part, tool: "bash" })
+      if (invalid === "completed")
+        yield* sessions.updatePart({
+          ...part,
+          state: {
+            status: "completed",
+            input: {},
+            output: "already answered",
+            title: "Answered",
+            metadata: {},
+            time: { start: 1, end: 2 },
+          },
+        })
+      if (invalid === "error")
+        yield* sessions.updatePart({
+          ...part,
+          state: {
+            status: "error",
+            input: {},
+            error: "unrelated tool failure",
+            time: { start: 1, end: 2 },
+          },
+        })
+      const before = yield* sessions.messages({ sessionID: chat.id })
+      yield* resumeOrphanedQuestion({
+        request: { ...request, tool: invalid === "unlinked" ? undefined : request.tool },
+        type: "reply",
+        answers: [["Yes"]],
+      })
+      expect(yield* sessions.messages({ sessionID: chat.id })).toEqual(before)
+      expect(yield* llm.hits).toHaveLength(0)
+    }),
+  )
+}
+
+const persistQuestion = Effect.fn("test.persistQuestion")(function* (request: Question.Request) {
+  const database = yield* Database.Service
+  yield* database.db
+    .insert(QuestionRequestTable)
+    .values({
+      id: request.id,
+      session_id: request.sessionID,
+      data: { questions: request.questions, tool: request.tool },
+    })
+    .run()
+    .pipe(Effect.orDie)
+})
+
+it.instance("orphaned dismiss finishes the question and tells the model it was dismissed", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const questions = yield* Question.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* seedDanglingQuestion(request)
+    yield* persistQuestion(request)
+    yield* llm.text("dismissed")
+
+    const result = yield* questions.reject(request.id)
+    expect(result.outcome).toBe("orphaned")
+    if (result.outcome !== "orphaned") return
+    yield* resumeOrphanedQuestion({ request: result.request, type: "reject" })
+
+    const message = Option.getOrThrow(
+      yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id),
+    )
+    expect(message.info.role === "assistant" ? message.info.time.completed : undefined).toBeNumber()
+    expect(message.info.role === "assistant" ? message.info.error : "wrong role").toBeUndefined()
+    expect(message.parts.find((part) => part.type === "tool")?.state).toMatchObject({
+      status: "error",
+      error: "The user dismissed this question",
+    })
+    expect(yield* questions.list()).toHaveLength(0)
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(1)
+    expect(JSON.stringify(hits[0].body.messages)).toContain("The user dismissed this question")
+  }),
+)
+
+it.instance("orphaned sibling questions wait for the last answer before continuing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const questions = yield* Question.Service
+    const recovery = yield* SessionRecovery.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    const requests = ["first", "second"].map((callID) =>
+      questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID }),
+    )
+    for (const request of requests) {
+      yield* seedDanglingQuestion(request)
+      yield* persistQuestion(request)
+    }
+    yield* recovery.init()
+    yield* llm.text("both answered")
+
+    for (const [index, request] of requests.entries()) {
+      const result = yield* questions.reply({ requestID: request.id, answers: [["Yes"]] })
+      expect(result.outcome).toBe("orphaned")
+      if (result.outcome !== "orphaned") return
+      yield* resumeOrphanedQuestion({ request: result.request, type: "reply", answers: [["Yes"]] })
+      expect(yield* llm.hits).toHaveLength(index)
+      const message = Option.getOrThrow(
+        yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id),
+      )
+      if (message.info.role !== "assistant") throw new Error("Expected assistant")
+      expect(message.info.error).toBeUndefined()
+      if (index === 0) expect(message.info.time.completed).toBeUndefined()
+      if (index === 1) expect(message.info.time.completed).toBeNumber()
+    }
+    const hits = yield* llm.hits
+    const messages = hits[0].body.messages as Array<{ role: string }>
+    expect(messages.filter((message) => message.role === "tool")).toHaveLength(2)
+  }),
+)
+
+it.instance("cancel after restart terminates every orphaned question without running the model", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const sessions = yield* Session.Service
+    const questions = yield* Question.Service
+    const prompt = yield* SessionPrompt.Service
+    const recovery = yield* SessionRecovery.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id)
+    for (const callID of ["first", "second"]) {
+      const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID })
+      yield* seedDanglingQuestion(request)
+      yield* persistQuestion(request)
+    }
+
+    yield* prompt.cancel(chat.id)
+    yield* recovery.init()
+
+    const message = Option.getOrThrow(
+      yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id),
+    )
+    expect(message.info.role === "assistant" ? message.info.error?.name : undefined).toBe("MessageAbortedError")
+    expect(message.info.role === "assistant" ? message.info.time.completed : undefined).toBeNumber()
+    const parts = message.parts.filter((part) => part.type === "tool")
+    expect(parts).toHaveLength(2)
+    expect(parts.every((part) => part.state.status === "error")).toBe(true)
+    expect(yield* questions.list()).toHaveLength(0)
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("orphaned reply preserves an unrelated failure and does not resume it", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
     const seeded = yield* seed(chat.id)
-    yield* llm.text("resumed")
+    const error = new NamedError.Unknown({ message: "unrelated provider failure" }).toObject()
+    yield* sessions.updateMessage({ ...seeded.assistant, error })
+    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "que-call" })
+    yield* seedDanglingQuestion(request)
 
-    const request = questionRequest({ sessionID: chat.id, messageID: seeded.assistant.id, callID: "no-such-call" })
-    yield* resumeOrphanedReply({ request, answers: [["Yes"]] })
+    yield* resumeOrphanedQuestion({ request, type: "reply", answers: [["Yes"]] })
 
-    expect(yield* llm.hits).toHaveLength(1)
+    const message = Option.getOrThrow(
+      yield* sessions.findMessage(chat.id, (msg) => msg.info.id === seeded.assistant.id),
+    )
+    expect(message.info.role === "assistant" ? message.info.error : undefined).toEqual(error)
+    expect(yield* llm.hits).toHaveLength(0)
   }),
 )

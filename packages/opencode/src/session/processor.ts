@@ -739,7 +739,7 @@ const layer = Layer.effect(
               ),
               (part) =>
                 Effect.gen(function* () {
-                  if (part.type === "tool") yield* settleToolCall(part.callID)
+                  if (part.type === "tool") delete ctx.toolcalls[part.callID]
                   yield* session.removePart({
                     sessionID: ctx.sessionID,
                     messageID: ctx.assistantMessage.id,

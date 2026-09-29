@@ -280,6 +280,13 @@ const relayedOutageLLM = Layer.succeed(
             LLMEvent.textStart({ id: "text-2" }),
             LLMEvent.textDelta({ id: "text-2", text: "hello" }),
             LLMEvent.textEnd({ id: "text-2" }),
+            LLMEvent.toolCall({ id: "call-dead", name: "lookup", input: {}, providerExecuted: true }),
+            LLMEvent.toolResult({
+              id: "call-dead",
+              name: "lookup",
+              result: { type: "text", value: "done" },
+              providerExecuted: true,
+            }),
             LLMEvent.stepFinish({ index: 0, reason: "stop" }),
             LLMEvent.finish({ reason: "stop" }),
           ),
@@ -1475,7 +1482,10 @@ itRelayedOutage.live("session.processor effect tests drop the dead route's parti
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
 
         expect(value).toBe("continue")
-        expect(parts.filter((part) => part.type === "reasoning" || part.type === "tool")).toEqual([])
+        expect(parts.filter((part) => part.type === "reasoning")).toEqual([])
+        expect(
+          parts.flatMap((part) => (part.type === "tool" ? [[part.callID, part.tool, part.state.status]] : [])),
+        ).toEqual([["call-dead", "lookup", "completed"]])
         expect(parts.flatMap((part) => (part.type === "text" ? [part.text] : []))).toEqual(["earlier output", "hello"])
         expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model" })
       }),

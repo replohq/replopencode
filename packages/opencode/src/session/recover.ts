@@ -17,9 +17,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 export const RESTART_ERROR_MESSAGE = "The agent restarted before it could finish this turn. Send your message again."
 
-// Persisted questions can still be answered after the process dies; other unfinished work cannot.
-// The coordinator derives terminal events from repaired messages during replay. Publishing
-// session.error here would race clients that key "no reply yet" off the first assistant message.
+// Replay derives terminal events; publishing session.error here would race clients awaiting the first reply.
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -56,10 +54,10 @@ const layer = Layer.effect(
         Effect.provideService(Database.Service, database),
       )
       if (info.role !== "assistant" || info.time.completed) return
-      const unfinished = parts.filter(
-        (part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
-      )
-      if (unfinished.length > 0 && unfinished.every((part) => part.type === "tool" && part.tool === "question")) {
+      const unfinished = parts
+        .filter((part) => part.type === "tool")
+        .filter((part) => part.state.status === "pending" || part.state.status === "running")
+      if (unfinished.length > 0 && unfinished.every((part) => part.tool === "question")) {
         const requests = yield* database.db
           .select({ data: QuestionRequestTable.data })
           .from(QuestionRequestTable)
@@ -67,17 +65,14 @@ const layer = Layer.effect(
           .all()
           .pipe(Effect.orDie)
         if (
-          unfinished.every(
-            (part) =>
-              part.type === "tool" &&
-              requests.some(({ data }) => data.tool?.messageID === row.id && data.tool.callID === part.callID),
+          unfinished.every((part) =>
+            requests.some(({ data }) => data.tool?.messageID === row.id && data.tool.callID === part.callID),
           )
         )
           return
       }
       const end = Date.now()
-      for (const part of parts) {
-        if (part.type !== "tool" || part.state.status === "completed" || part.state.status === "error") continue
+      for (const part of unfinished) {
         const metadata = "metadata" in part.state && part.state.metadata ? part.state.metadata : {}
         yield* sessions.updatePart({
           ...part,

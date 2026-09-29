@@ -5,13 +5,12 @@ import { Question } from "."
 import { settleOrphanedQuestion, type OrphanedResolution } from "./settle"
 
 export const resumeOrphanedQuestion = Effect.fn("Question.resumeOrphanedQuestion")(function* (
-  input: OrphanedResolution,
+  input: OrphanedResolution & { type: "reply" | "reject" },
 ) {
   const prompts = yield* SessionPrompt.Service
   const status = yield* SessionStatus.Service
   const questions = yield* Question.Service
-  const result = yield* settleOrphanedQuestion(input)
-  if (!result.settled || input.type === "cancel") return
+  if (!(yield* settleOrphanedQuestion(input))) return
   if ((yield* questions.list()).some((request) => request.sessionID === input.request.sessionID)) return
 
   const current = yield* status.get(input.request.sessionID)

@@ -92,6 +92,7 @@ interface ProcessorContext extends Input {
   snapshotMs: number
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   fallbacks: number
+  finishedToolCalls: Set<string>
 }
 
 type StreamEvent = LLMEvent
@@ -133,6 +134,7 @@ const layer = Layer.effect(
         firstRequestStartAt: undefined,
         reasoningMap: {},
         fallbacks: 0,
+        finishedToolCalls: new Set(),
       }
       let aborted = false
 
@@ -228,6 +230,7 @@ const layer = Layer.effect(
             attachments: output.attachments,
           },
         })
+        ctx.finishedToolCalls.add(toolCallID)
         yield* settleToolCall(toolCallID)
       })
 
@@ -248,6 +251,7 @@ const layer = Layer.effect(
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
+        ctx.finishedToolCalls.add(toolCallID)
         yield* settleToolCall(toolCallID)
         return true
       })
@@ -266,6 +270,10 @@ const layer = Layer.effect(
         name: string
         providerExecuted?: boolean
       }) {
+        // Some provider streams send input events for a call after its result. A new
+        // part would replay as a second tool_use with the same id, which Anthropic
+        // rejects on every later turn of the session.
+        if (ctx.finishedToolCalls.has(input.id)) return undefined
         const existing = yield* readToolCall(input.id)
         if (existing) {
           if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
@@ -381,7 +389,7 @@ const layer = Layer.effect(
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
-            yield* ensureToolCall(value)
+            if (!(yield* ensureToolCall(value))) return
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,

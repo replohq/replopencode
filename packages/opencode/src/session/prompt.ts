@@ -5,6 +5,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
+import { OutputLengthError } from "./message-error"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
@@ -1091,6 +1092,7 @@ const layer = Layer.effect(
         let structured: unknown
         let step = 0
         let overflowCompactions = 0
+        let rerunCutOff = false
         const turnStart = Date.now()
         let firstTokenAt: number | undefined
         let firstTokenReqStart: number | undefined
@@ -1151,6 +1153,25 @@ const layer = Layer.effect(
             lastAssistantMsg?.parts.some(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
+
+          // Cut-off response: replaying it last makes a prefill ending in thinking, which Anthropic rejects.
+          const cutOff =
+            lastAssistant?.finish === "tool-calls" &&
+            lastAssistant.parentID === lastUser.id &&
+            !lastAssistantMsg?.parts.some((part) => part.type === "tool" || (part.type === "text" && part.text))
+          if (cutOff) {
+            if (rerunCutOff) {
+              const error = new OutputLengthError({}).toObject()
+              yield* sessions.updateMessage({ ...lastAssistant, error })
+              yield* events.publish(Session.Event.Error, { sessionID, error })
+              break
+            }
+            rerunCutOff = true
+            step-- // the rerun keeps this step's number
+            yield* sessions.removeMessage({ sessionID, messageID: lastAssistant.id })
+            cachedMsgs = undefined
+            continue
+          }
 
           if (
             lastAssistant?.finish &&

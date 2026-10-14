@@ -61,6 +61,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -75,6 +76,8 @@ const ref = {
   providerID: ProviderV2.ID.make("test"),
   modelID: ModelV2.ID.make("test-model"),
 }
+
+const cutOff = () => reply().reason("This part of the response was interrupted before it finished.").toolCalls()
 
 function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
   return Effect.acquireUseRelease(
@@ -737,6 +740,67 @@ it.instance("loop stops after one overflow compaction when the replay still over
       expect(result.info.finish).toBe("error")
     }
     expect(messages.filter((message) => message.parts.some((part) => part.type === "compaction"))).toHaveLength(1)
+  }),
+)
+
+it.instance("loop drops a step that reports tool calls but streams none and runs it again", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), agent: { build: { steps: 2 } } }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.push(cutOff())
+    yield* llm.text("world")
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const hits = yield* llm.hits
+
+    expect(hits).toHaveLength(2)
+    // The rerun is still step 1 of 2, so it must not carry the last-step prompt.
+    expect(hits[1]?.body.messages).not.toContainEqual(expect.objectContaining({ content: MAX_STEPS_PROMPT }))
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(1)
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "world" })]))
+  }),
+)
+
+it.instance("loop fails the turn when the rerun step is cut off again", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const published: string[] = []
+    const off = yield* events.listen((event) => {
+      const data = event.data as typeof Session.Event.Error.data.Type
+      if (event.type === Session.Event.Error.type && data.sessionID === chat.id && data.error) {
+        published.push(data.error.name)
+      }
+      return Effect.void
+    })
+
+    yield* llm.push(cutOff(), cutOff())
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    yield* off
+
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(result.info).toMatchObject({ role: "assistant", error: { name: "MessageOutputLengthError" } })
+    expect(published).toEqual(["MessageOutputLengthError"])
   }),
 )
 

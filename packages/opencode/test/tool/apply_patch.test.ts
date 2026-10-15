@@ -75,6 +75,7 @@ const makeCtx = () => {
 
 const readText = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf-8"))
 const writeText = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content, "utf-8"))
+const writeBytes = (filepath: string, content: Uint8Array) => Effect.promise(() => fs.writeFile(filepath, content))
 const makeDir = (dir: string) => Effect.promise(() => fs.mkdir(dir, { recursive: true }))
 
 const expectFailure = <A, E, R>(effect: Effect.Effect<A, E, R>, message?: string) =>
@@ -363,6 +364,57 @@ describe("tool.apply_patch freeform", () => {
       const patchText = "*** Begin Patch\n*** Delete File: dir\n*** End Patch"
 
       yield* expectFailure(execute({ patchText }, ctx))
+    }),
+  )
+
+  it.instance("deletes binary files without embedding their contents in metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const target = path.join(test.directory, "clip.mp4")
+      const content = new Uint8Array(512 * 1024)
+      content.set([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70])
+      yield* writeBytes(target, content)
+
+      const result = yield* execute({ patchText: "*** Begin Patch\n*** Delete File: clip.mp4\n*** End Patch" }, ctx)
+
+      expect(result.output).toMatch(/D .*clip\.mp4/)
+      expect(result.metadata.diff.length).toBeLessThan(1024)
+      expect(result.metadata.diff).toContain("Binary or oversized file deleted (524288 bytes")
+      expect(result.metadata.files[0]?.patch.length).toBeLessThan(1024)
+      expect(calls[0]?.metadata.diff.length).toBeLessThan(1024)
+      yield* expectReadFailure(target)
+    }),
+  )
+
+  it.instance("deletes oversized files without reading them into metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const target = path.join(test.directory, "large.txt")
+      yield* writeText(target, "x\n".repeat(16 * 1024 * 1024))
+
+      const result = yield* execute({ patchText: "*** Begin Patch\n*** Delete File: large.txt\n*** End Patch" }, ctx)
+
+      expect(result.metadata.diff.length).toBeLessThan(1024)
+      expect(result.metadata.files[0]?.patch.length).toBeLessThan(1024)
+      expect(result.metadata.files[0]?.deletions).toBe(0)
+      expect(calls[0]?.metadata.diff.length).toBeLessThan(1024)
+      yield* expectReadFailure(target)
+    }),
+  )
+
+  it.instance("keeps the full diff when deleting a small text file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      yield* writeText(path.join(test.directory, "notes.txt"), "first\nsecond\n")
+
+      const result = yield* execute({ patchText: "*** Begin Patch\n*** Delete File: notes.txt\n*** End Patch" }, ctx)
+
+      expect(result.metadata.diff).toContain("-first")
+      expect(result.metadata.diff).toContain("-second")
+      expect(result.metadata.files[0]?.deletions).toBe(3)
     }),
   )
 

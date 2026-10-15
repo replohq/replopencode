@@ -43,3 +43,5 @@ export function isBinaryFile(filepath: string, bytes: Uint8Array) {
 
   return nonPrintableCount / bytes.length > 0.3
 }
+
+export * as Binary from "./binary"

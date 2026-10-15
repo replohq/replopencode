@@ -9,7 +9,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { isBinaryFile } from "@/util/binary"
+import { Binary } from "@/util/binary"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -278,7 +278,7 @@ export const ReadTool = Tool.define<
         }
       }
 
-      if (isBinaryFile(filepath, sample)) {
+      if (Binary.isBinaryFile(filepath, sample)) {
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 

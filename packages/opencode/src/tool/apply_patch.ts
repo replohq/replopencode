@@ -14,7 +14,7 @@ import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
-import { isBinaryFile } from "@/util/binary"
+import { Binary } from "@/util/binary"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -168,7 +168,7 @@ export const ApplyPatchTool = Tool.define(
             const size = Number(stats.size)
             const bytes = size > 1024 * 1024 ? undefined : yield* afs.readFile(filePath)
             const source =
-              bytes && !isBinaryFile(filePath, bytes)
+              bytes && !Binary.isBinaryFile(filePath, bytes)
                 ? Bom.split(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes))
                 : undefined
             const deleteDiff = source

@@ -75,6 +75,7 @@ const makeCtx = () => {
 
 const readText = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf-8"))
 const writeText = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content, "utf-8"))
+const writeBytes = (filepath: string, content: Uint8Array) => Effect.promise(() => fs.writeFile(filepath, content))
 const makeDir = (dir: string) => Effect.promise(() => fs.mkdir(dir, { recursive: true }))
 
 const expectFailure = <A, E, R>(effect: Effect.Effect<A, E, R>, message?: string) =>
@@ -163,6 +164,8 @@ describe("tool.apply_patch freeform", () => {
         const addFile = permissionCall.metadata.files.find((f) => f.type === "add")
         expect(addFile?.relativePath).toBe("nested/new.txt")
         expect(addFile?.patch).toContain("+created")
+
+        expect(permissionCall.metadata.files.find((f) => f.type === "delete")?.deletions).toBe(2)
 
         const updateFile = permissionCall.metadata.files.find((f) => f.type === "update")
         expect(updateFile?.patch).toContain("-line2")
@@ -363,6 +366,28 @@ describe("tool.apply_patch freeform", () => {
       const patchText = "*** Begin Patch\n*** Delete File: dir\n*** End Patch"
 
       yield* expectFailure(execute({ patchText }, ctx))
+    }),
+  )
+
+  it.instance("deletes binary and oversized files without embedding their contents in metadata", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const binary = new Uint8Array(512 * 1024)
+      binary.set([0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70])
+      yield* writeBytes(path.join(test.directory, "clip.mp4"), binary)
+      yield* writeText(path.join(test.directory, "large.txt"), "x".repeat(1024 * 1024 + 1))
+
+      const result = yield* execute(
+        { patchText: "*** Begin Patch\n*** Delete File: clip.mp4\n*** Delete File: large.txt\n*** End Patch" },
+        ctx,
+      )
+
+      expect(result.metadata.diff.length).toBeLessThan(1024)
+      expect(result.metadata.files.map((file) => file.deletions)).toEqual([0, 0])
+      expect(calls[0]?.metadata.diff.length).toBeLessThan(1024)
+      yield* expectReadFailure(path.join(test.directory, "clip.mp4"))
+      yield* expectReadFailure(path.join(test.directory, "large.txt"))
     }),
   )
 

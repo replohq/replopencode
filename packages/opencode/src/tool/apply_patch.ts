@@ -14,6 +14,7 @@ import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../format"
 import * as Bom from "@/util/bom"
+import { Binary } from "@/util/binary"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -159,29 +160,30 @@ export const ApplyPatchTool = Tool.define(
           }
 
           case "delete": {
-            const source = yield* Bom.readFile(afs, filePath).pipe(
-              Effect.catch((error) =>
-                Effect.fail(
-                  new Error(
-                    `apply_patch verification failed: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                ),
-              ),
-            )
-            const contentToDelete = source.text
-            const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
-
-            const deletions = contentToDelete.split("\n").length
+            // NOTE (Cole, 2026-10-15, REPL-33048): a diff of a binary or >1 MiB delete OOM-killed sandboxes; record its size only.
+            const stats = yield* afs.stat(filePath)
+            if (stats.type === "Directory") {
+              return yield* Effect.fail(new Error(`apply_patch verification failed: ${filePath} is a directory`))
+            }
+            const size = Number(stats.size)
+            const bytes = size > 1024 * 1024 ? undefined : yield* afs.readFile(filePath)
+            const source =
+              bytes && !Binary.isBinaryFile(filePath, bytes)
+                ? Bom.split(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes))
+                : undefined
+            const deleteDiff = source
+              ? trimDiff(createTwoFilesPatch(filePath, filePath, source.text, ""))
+              : `Index: ${filePath}\nBinary or oversized file deleted (${size} bytes; content diff omitted)`
 
             fileChanges.push({
               filePath,
-              oldContent: contentToDelete,
+              oldContent: source?.text ?? "",
               newContent: "",
               type: "delete",
               diff: deleteDiff,
               additions: 0,
-              deletions,
-              bom: source.bom,
+              deletions: source ? source.text.split("\n").length : 0,
+              bom: source?.bom ?? false,
             })
 
             totalDiff += deleteDiff + "\n"

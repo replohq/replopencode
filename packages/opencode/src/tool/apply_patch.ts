@@ -16,8 +16,6 @@ import { Format } from "../format"
 import * as Bom from "@/util/bom"
 import { isBinaryFile } from "@/util/binary"
 
-const MAX_DELETE_DIFF_BYTES = 1024 * 1024
-
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
 })
@@ -162,28 +160,20 @@ export const ApplyPatchTool = Tool.define(
           }
 
           case "delete": {
-            // NOTE (Cole, 2026-10-15, REPL-33048): diffing a binary or large delete copies the whole file into tool
-            // metadata, which serializes ~11x larger (control bytes become \u escapes); a 30 MiB video OOM-killed a
-            // 4 GiB sandbox. Record those deletes by size only. Upstream: anomalyco/opencode#41733.
-            const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-            if (!stats || stats.type === "Directory") {
-              return yield* Effect.fail(
-                new Error(`apply_patch verification failed: Failed to read file to delete: ${filePath}`),
-              )
+            // NOTE (Cole, 2026-10-15, REPL-33048): a diff of a binary or >1 MiB delete OOM-killed sandboxes; record its size only.
+            const stats = yield* afs.stat(filePath)
+            if (stats.type === "Directory") {
+              return yield* Effect.fail(new Error(`apply_patch verification failed: ${filePath} is a directory`))
             }
             const size = Number(stats.size)
-            const bytes = size > MAX_DELETE_DIFF_BYTES ? undefined : yield* afs.readFile(filePath)
+            const bytes = size > 1024 * 1024 ? undefined : yield* afs.readFile(filePath)
             const source =
               bytes && !isBinaryFile(filePath, bytes)
                 ? Bom.split(new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes))
                 : undefined
             const deleteDiff = source
               ? trimDiff(createTwoFilesPatch(filePath, filePath, source.text, ""))
-              : [
-                  `Index: ${filePath}`,
-                  "===================================================================",
-                  `Binary or oversized file deleted (${size} bytes; content diff omitted)`,
-                ].join("\n")
+              : `Index: ${filePath}\nBinary or oversized file deleted (${size} bytes; content diff omitted)`
 
             fileChanges.push({
               filePath,

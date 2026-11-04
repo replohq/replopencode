@@ -103,8 +103,8 @@ export interface Interface {
   readonly invalidate: () => Effect.Effect<void>
 }
 
-const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
-  const md = yield* Effect.tryPromise({
+const parse = Effect.fnUntraced(function* (match: string, events: EventV2Bridge.Service["Service"]) {
+  return yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
   }).pipe(
@@ -118,19 +118,12 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
       }),
     ),
   )
+})
 
-  if (!md) return
+function add(state: State, match: string, md: Awaited<ReturnType<typeof ConfigMarkdown.parse>>) {
+  if (!isSkillFrontmatter(md.data)) return Effect.void
 
-  if (!isSkillFrontmatter(md.data)) return
-
-  if (state.skills[md.data.name]) {
-    yield* Effect.logWarning("duplicate skill name", {
-      name: md.data.name,
-      existing: state.skills[md.data.name].location,
-      duplicate: match,
-    })
-  }
-
+  const existing = state.skills[md.data.name]
   state.dirs.add(path.dirname(match))
   state.skills[md.data.name] = {
     name: md.data.name,
@@ -138,7 +131,10 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
     location: match,
     content: md.content,
   }
-})
+  return existing
+    ? Effect.logWarning("duplicate skill name", { name: md.data.name, existing: existing.location, duplicate: match })
+    : Effect.void
+}
 
 const scan = Effect.fnUntraced(function* (
   state: ScanState,
@@ -166,6 +162,8 @@ const scan = Effect.fnUntraced(function* (
   )
 
   for (const match of matches) {
+    // A file found again moves to its latest source, so the source listed last wins a name clash.
+    state.matches.delete(match)
     state.matches.add(match)
     state.dirs.add(path.dirname(match))
   }
@@ -238,10 +236,13 @@ const loadSkills = Effect.fnUntraced(function* (
   discovered: DiscoveryState,
   events: EventV2Bridge.Service["Service"],
 ) {
-  yield* Effect.forEach(discovered.matches, (match) => add(state, match, events), {
+  // Parse in parallel but register in discovery order, so the same files always resolve a name clash the same way.
+  const parsed = yield* Effect.forEach(discovered.matches, (match) => parse(match, events), {
     concurrency: "unbounded",
-    discard: true,
   })
+  for (const [index, md] of parsed.entries()) {
+    if (md) yield* add(state, discovered.matches[index], md)
+  }
 
   yield* Effect.logInfo("init", { count: Object.keys(state.skills).length })
 })

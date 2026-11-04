@@ -122,6 +122,27 @@ Instructions here.
     ),
   )
 
+  it.live("the skills path listed last wins a name clash, every time", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const write = (folder: string, description: string) =>
+            Bun.write(
+              path.join(dir, folder, "brand-voice", "SKILL.md"),
+              `---\nname: brand-voice\ndescription: ${description}\n---\n\n# Brand voice\n`,
+            )
+          yield* Effect.promise(() =>
+            Promise.all([write(path.join(".opencode", "skills"), "personal"), write("team", "team")]),
+          )
+
+          const skill = yield* Skill.Service
+          const item = (yield* skill.all()).find((x) => x.name === "brand-voice")
+          expect(item?.description).toBe("personal")
+        }),
+      { git: true, config: { skills: { paths: ["team", ".opencode/skills"] } } },
+    ),
+  )
+
   it.live("returns skill directories from Skill.dirs", () =>
     provideTmpdirInstance(
       (dir) =>

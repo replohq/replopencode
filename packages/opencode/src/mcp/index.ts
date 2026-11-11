@@ -167,6 +167,7 @@ export interface ServerInstructions {
 export interface McpTool {
   /** Shared cached definition; consumers must copy rather than mutate it. */
   readonly def: MCPToolDef
+  /** The server's current client, resolved on each read; capture it only at the moment of the call. */
   readonly client: MCPClient
   readonly timeout?: number
 }
@@ -736,7 +737,14 @@ const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const def of listed) {
-          result[McpCatalog.toolName(clientName, def.name)] = { def, client, timeout }
+          result[McpCatalog.toolName(clientName, def.name)] = {
+            def,
+            // Read at call time: a reconnect while the call awaits approval closes the client captured here.
+            get client() {
+              return s.clients[clientName] ?? client
+            },
+            timeout,
+          }
         }
       }
       return result

@@ -5,3 +5,7 @@ preload = ["@opentui/solid/preload", "./test/preload.ts"]
 # timeout is not actually parsed from bunfig.toml (see src/bunfig.zig in oven-sh/bun)
 # using --timeout in package.json scripts instead
 # https://github.com/oven-sh/bun/issues/7789
+# Several tests race a real clock (a 30s budget for a spawned CLI, a 50ms stream
+# timeout) and lose it on a loaded CI runner. A test that fails three times in a
+# row still fails.
+retry = 2

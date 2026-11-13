@@ -124,6 +124,16 @@ describe("session.fallback recordFailure", () => {
     expect(SessionFallback.recordFailure({ model: openrouter, error: unknown, swaps: 0 })).toEqual(anthropic)
   })
 
+  test("switches on a content-filter refusal only when the config opts in", () => {
+    const refusal = new SessionV1.ContentFilterError({ message: "blocked" }).toObject()
+    useConfig(cfg)
+    expect(SessionFallback.recordFailure({ model: openrouter, error: refusal, swaps: 0 })).toBeUndefined()
+    expect(SessionFallback.isDegraded(openrouter)).toBe(false)
+    useConfig({ ...cfg, fallbackOnRefusal: true })
+    expect(SessionFallback.recordFailure({ model: openrouter, error: refusal, swaps: 0 })).toEqual(anthropic)
+    expect(SessionFallback.route(openrouter)).toEqual(anthropic)
+  })
+
   test("ignores map values without a provider", () => {
     useConfig({
       ...cfg,

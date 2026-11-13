@@ -524,6 +524,15 @@ const layer = Layer.effect(
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
+            // A refusal ends the stream cleanly, so the retry policy never sees it.
+            // Failing here hands it to the fallback like a provider error; the row
+            // above already carries what the refused request cost.
+            if (value.reason === "content-filter" && SessionFallback.config()?.fallbackOnRefusal)
+              return yield* Effect.fail(
+                new SessionV1.ContentFilterError({
+                  message: "The response was blocked by the provider's content filter",
+                }).toObject(),
+              )
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {

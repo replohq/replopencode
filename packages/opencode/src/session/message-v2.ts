@@ -645,6 +645,8 @@ export function fromError(
       ).toObject()
     case OutputLengthError.isInstance(e):
       return e
+    case SessionV1.ContentFilterError.isInstance(e):
+      return e
     case LoadAPIKeyError.isInstance(e):
       return new AuthError(
         {

@@ -514,6 +514,113 @@ it.live("session.processor effect tests keep the requested model on the row when
   ),
 )
 
+it.live("session.processor effect tests switch to the fallback model after a content-filter refusal", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 1,
+          cooldownSeconds: 60,
+          fallbackOnRefusal: true,
+        })
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(reply().text("partial").contentFilter())
+        yield* llm.text("hello")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
+          tools: {},
+        })
+        const parts = yield* MessageV2.parts(msg.id)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("continue")
+        // No same-route retry: a refusal repeats, so the swap is immediate.
+        expect(yield* llm.calls).toBe(2)
+        expect(parts.filter((part) => part.type === "text").map((part) => part.type === "text" && part.text)).toEqual([
+          "hello",
+        ])
+        expect(stored.info).toMatchObject({ providerID: "fallback", modelID: "fallback-model", finish: "stop" })
+        expect(stored.info.role === "assistant" ? stored.info.error : undefined).toBeUndefined()
+        expect(SessionFallback.isDegraded({ providerID: "test", modelID: "test-model" })).toBe(true)
+      }),
+    { config: (url) => fallbackCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests surface the refusal when the fallback is refused too", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        useFallbackConfig({
+          fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+          fallbackOnErrors: [503],
+          maxFallbackAttempts: 1,
+          maxUpstreamRetryAttempts: 1,
+          cooldownSeconds: 60,
+          fallbackOnRefusal: true,
+        })
+        const { processors, session, provider } = yield* boot()
+        yield* llm.push(reply().contentFilter(), reply().contentFilter())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          convert: () => Effect.succeed([{ role: "user", content: "hi" }]),
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(2)
+        expect(stored.info).toMatchObject({ finish: "content-filter" })
+        expect(stored.info.role === "assistant" ? stored.info.error : undefined).toEqual({
+          name: "ContentFilterError",
+          data: { message: "The response was blocked by the provider's content filter" },
+        })
+      }),
+    { config: (url) => fallbackCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests preserve text start time", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

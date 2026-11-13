@@ -15,6 +15,8 @@ const ConfigSchema = Schema.Struct({
   maxFallbackAttempts: NonNegativeInt,
   maxUpstreamRetryAttempts: NonNegativeInt,
   cooldownSeconds: NonNegativeInt,
+  // Opt-in, so a release carrying this stays inert until the coordinator asks for it.
+  fallbackOnRefusal: Schema.optional(Schema.Boolean),
 })
 export type Config = Schema.Schema.Type<typeof ConfigSchema>
 const decode = Schema.decodeUnknownExit(Schema.fromJsonString(ConfigSchema))
@@ -111,12 +113,15 @@ export function route(model: ModelRef, now = Date.now()): ModelRef {
 // a 200 stream, plus retryable errors with no status at all (connection
 // resets, stream drops). Non-retryable statusless errors such as an invalid
 // prompt or exhausted quota stay on the requested model. Context overflow and
-// aborts are the caller's problem and never switch models.
+// aborts are the caller's problem and never switch models. A provider's content
+// filter is per model: a history one model refuses another will answer, and it
+// keeps refusing it, so the cooldown is what holds later steps on the fallback.
 function qualifies(error: Err): boolean {
   const cfg = config()
   if (!cfg) return false
   if (SessionV1.ContextOverflowError.isInstance(error)) return false
   if (SessionV1.AbortedError.isInstance(error)) return false
+  if (SessionV1.ContentFilterError.isInstance(error)) return cfg.fallbackOnRefusal === true
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     if (status === undefined) return error.data.isRetryable === true

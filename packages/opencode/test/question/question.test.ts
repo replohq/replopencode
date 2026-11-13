@@ -6,7 +6,13 @@ import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
-import { disposeAllInstances, provideInstance, seedSession, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import {
+  disposeAllInstances,
+  provideInstance,
+  seedSession,
+  testInstanceStoreLayer,
+  tmpdirScoped,
+} from "../fixture/fixture"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -589,4 +595,35 @@ it.instance(
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Question.NotFoundError)
     }),
   { git: true },
+)
+
+lifecycle.live("reply and reject after reload claim an orphaned question only once", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true })
+    const fiber = yield* askEffect({
+      sessionID: SessionID.make("ses_race"),
+      questions: [{ question: "Continue?", header: "Continue", options: [] }],
+    }).pipe(provideInstance(dir), Effect.forkScoped)
+    const [request] = yield* waitForPending(1).pipe(provideInstance(dir))
+    yield* InstanceStore.Service.use((store) => store.reload({ directory: dir }))
+    yield* Fiber.await(fiber)
+
+    const results = yield* Effect.gen(function* () {
+      const questions = yield* Question.Service
+      return yield* Effect.all(
+        [
+          questions.reply({ requestID: request.id, answers: [["Yes"]] }).pipe(Effect.exit),
+          questions.reject(request.id).pipe(Effect.exit),
+        ],
+        { concurrency: "unbounded" },
+      )
+    }).pipe(provideInstance(dir))
+    expect(results.filter(Exit.isSuccess)).toHaveLength(1)
+    expect(results.filter(Exit.isFailure)).toHaveLength(1)
+    for (const result of results) {
+      if (Exit.isSuccess(result)) expect(result.value).toEqual({ outcome: "orphaned", request })
+      if (Exit.isFailure(result)) expect(Cause.squash(result.cause)).toBeInstanceOf(Question.NotFoundError)
+    }
+    expect(yield* listEffect.pipe(provideInstance(dir))).toHaveLength(0)
+  }),
 )

@@ -9,6 +9,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionRecovery } from "@/session/recover"
+import { Database } from "@opencode-ai/core/database/database"
+import { QuestionRequestTable } from "@opencode-ai/core/session/sql"
+import { QuestionID } from "@/question/schema"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
@@ -116,3 +119,85 @@ it.instance("leaves a completed assistant message alone", () =>
     expect(tool?.type === "tool" ? tool.state.status : "missing").toBe("running")
   }),
 )
+
+it.instance("preserves a question that is still answerable after restart", () =>
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const recovery = yield* SessionRecovery.Service
+    const database = yield* Database.Service
+    const chat = yield* sessions.create({})
+    const assistantID = yield* seedTurn(chat.id)
+    const before = yield* MessageV2.get({ sessionID: chat.id, messageID: assistantID })
+    const part = before.parts.find((part) => part.type === "tool")
+    if (!part || part.type !== "tool") throw new Error("Missing seeded tool")
+    yield* sessions.updatePart({ ...part, tool: "question" })
+    yield* database.db
+      .insert(QuestionRequestTable)
+      .values({
+        id: QuestionID.ascending(),
+        session_id: chat.id,
+        data: {
+          questions: [{ question: "Which color?", header: "Color", options: [{ label: "Blue", description: "Blue" }] }],
+          tool: { messageID: assistantID, callID: part.callID },
+        },
+      })
+      .run()
+      .pipe(Effect.orDie)
+
+    yield* recovery.init()
+
+    const after = yield* MessageV2.get({ sessionID: chat.id, messageID: assistantID })
+    expect(after.info.role === "assistant" ? after.info.error : "wrong role").toBeUndefined()
+    expect(after.info.role === "assistant" ? after.info.time.completed : "wrong role").toBeUndefined()
+    const tool = after.parts.find((part) => part.type === "tool")
+    expect(tool?.type === "tool" ? tool.state.status : "missing").toBe("running")
+  }),
+)
+
+for (const mismatch of ["missing", "message", "call", "session", "unlinked", "mixed"] as const) {
+  it.instance(`does not preserve an unfinished turn with ${mismatch} question state`, () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const recovery = yield* SessionRecovery.Service
+      const database = yield* Database.Service
+      const chat = yield* sessions.create({})
+      const assistantID = yield* seedTurn(chat.id)
+      const before = yield* MessageV2.get({ sessionID: chat.id, messageID: assistantID })
+      const part = before.parts.find((part) => part.type === "tool")
+      if (!part || part.type !== "tool") throw new Error("Missing seeded tool")
+      yield* sessions.updatePart({ ...part, tool: "question" })
+      if (mismatch !== "missing") {
+        const other = yield* sessions.create({})
+        yield* database.db
+          .insert(QuestionRequestTable)
+          .values({
+            id: QuestionID.ascending(),
+            session_id: mismatch === "session" ? other.id : chat.id,
+            data: {
+              questions: [{ question: "Which color?", header: "Color", options: [] }],
+              tool:
+                mismatch === "unlinked"
+                  ? undefined
+                  : {
+                      messageID: mismatch === "message" ? MessageID.ascending() : assistantID,
+                      callID: mismatch === "call" ? "another-call" : part.callID,
+                    },
+            },
+          })
+          .run()
+          .pipe(Effect.orDie)
+      }
+      if (mismatch === "mixed") {
+        yield* sessions.updatePart({ ...part, id: PartID.ascending(), callID: "bash-call" })
+      }
+
+      yield* recovery.init()
+
+      const after = yield* MessageV2.get({ sessionID: chat.id, messageID: assistantID })
+      expect(after.info.role === "assistant" ? after.info.error?.name : undefined).toBe("UnknownError")
+      expect(after.parts.filter((part) => part.type === "tool").every((part) => part.state.status === "error")).toBe(
+        true,
+      )
+    }),
+  )
+}

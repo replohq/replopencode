@@ -1,5 +1,5 @@
 import { Question } from "@/question"
-import { resumeOrphanedReply } from "@/question/resume"
+import { resumeOrphanedQuestion } from "@/question/resume"
 import { QuestionID } from "@/question/schema"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -11,6 +11,11 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     const svc = yield* Question.Service
     // Build-time scope: resumes forked into it outlive the reply request.
     const scope = yield* Scope.Scope
+    const notFound = (error: Question.NotFoundError) =>
+      new QuestionNotFoundError({
+        requestID: String(error.requestID),
+        message: `Question request not found: ${error.requestID}`,
+      })
 
     const list = Effect.fn("QuestionHttpApi.list")(function* () {
       return yield* svc.list()
@@ -25,18 +30,9 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
           requestID: ctx.params.requestID,
           answers: ctx.payload.answers,
         })
-        .pipe(
-          Effect.catchTag("Question.NotFoundError", (error) =>
-            Effect.fail(
-              new QuestionNotFoundError({
-                requestID: String(error.requestID),
-                message: `Question request not found: ${error.requestID}`,
-              }),
-            ),
-          ),
-        )
+        .pipe(Effect.mapError(notFound))
       if (result.outcome === "orphaned") {
-        yield* resumeOrphanedReply({ request: result.request, answers: ctx.payload.answers }).pipe(
+        yield* resumeOrphanedQuestion({ request: result.request, type: "reply", answers: ctx.payload.answers }).pipe(
           Effect.catchCause((cause) =>
             Effect.logError("question resume failed", { requestID: ctx.params.requestID, cause }),
           ),
@@ -52,13 +48,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     }) {
       yield* svc.saveProgress({ requestID: ctx.params.requestID, answers: ctx.payload.answers }).pipe(
         Effect.catchTags({
-          "Question.NotFoundError": (error) =>
-            Effect.fail(
-              new QuestionNotFoundError({
-                requestID: String(error.requestID),
-                message: `Question request not found: ${error.requestID}`,
-              }),
-            ),
+          "Question.NotFoundError": (error) => Effect.fail(notFound(error)),
           "Question.InvalidProgressError": (error) =>
             Effect.fail(new InvalidRequestError({ message: error.message, field: "answers" })),
         }),
@@ -67,16 +57,15 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     })
 
     const reject = Effect.fn("QuestionHttpApi.reject")(function* (ctx: { params: { requestID: QuestionID } }) {
-      yield* svc.reject(ctx.params.requestID).pipe(
-        Effect.catchTag("Question.NotFoundError", (error) =>
-          Effect.fail(
-            new QuestionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Question request not found: ${error.requestID}`,
-            }),
+      const result = yield* svc.reject(ctx.params.requestID).pipe(Effect.mapError(notFound))
+      if (result.outcome === "orphaned") {
+        yield* resumeOrphanedQuestion({ request: result.request, type: "reject" }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("question resume failed", { requestID: ctx.params.requestID, cause }),
           ),
-        ),
-      )
+          Effect.forkIn(scope),
+        )
+      }
       return true
     })
 

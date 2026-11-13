@@ -46,16 +46,7 @@ export class InvalidProgressError extends Schema.TaggedErrorClass<InvalidProgres
   }
 }
 
-interface PendingEntry {
-  info: Request
-  deferred: Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>
-}
-
-interface State {
-  pending: Map<QuestionID, PendingEntry>
-}
-
-export type ReplyOutcome =
+export type ResolutionOutcome =
   | { readonly outcome: "resolved" }
   | { readonly outcome: "orphaned"; readonly request: Request }
 
@@ -76,13 +67,13 @@ export interface Interface {
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<ReplyOutcome, NotFoundError>
+  }) => Effect.Effect<ResolutionOutcome, NotFoundError>
   readonly saveProgress: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
   }) => Effect.Effect<void, NotFoundError | InvalidProgressError>
-  readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
-  readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<void>
+  readonly reject: (requestID: QuestionID) => Effect.Effect<ResolutionOutcome, NotFoundError>
+  readonly rejectAllForSession: (sessionID: SessionID) => Effect.Effect<ReadonlyArray<ResolutionOutcome>>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -93,17 +84,17 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
     const { db } = yield* Database.Service
-    const state = yield* InstanceState.make<State>(
+    const state = yield* InstanceState.make(
       Effect.fn("Question.state")(function* () {
         const state = {
-          pending: new Map<QuestionID, PendingEntry>(),
+          pending: new Map<QuestionID, Deferred.Deferred<ReadonlyArray<Answer>, RejectedError>>(),
         }
 
         // Rows intentionally survive shutdown so a restarted process can still resolve replies.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const item of state.pending.values()) {
-              yield* Deferred.fail(item.deferred, new RejectedError())
+            for (const deferred of state.pending.values()) {
+              yield* Deferred.fail(deferred, new RejectedError())
             }
             state.pending.clear()
           }),
@@ -138,7 +129,7 @@ const layer = Layer.effect(
         })
         .run()
         .pipe(Effect.orDie)
-      pending.set(id, { info, deferred })
+      pending.set(id, deferred)
       yield* events.publish(Event.Asked, info)
 
       return yield* Effect.ensuring(
@@ -190,18 +181,10 @@ const layer = Layer.effect(
       })
       const pending = (yield* InstanceState.get(state)).pending
       const existing = pending.get(input.requestID)
-      if (!existing) {
-        yield* Effect.logInfo("reply for orphaned request", { requestID: input.requestID })
-        return { outcome: "orphaned", request } as const
-      }
       pending.delete(input.requestID)
-      const delivered = yield* Deferred.succeed(existing.deferred, input.answers)
-      if (!delivered) {
-        // Instance disposal already failed this waiter; the answers still need the orphaned heal path.
-        yield* Effect.logInfo("reply raced instance disposal, treating as orphaned", { requestID: input.requestID })
-        return { outcome: "orphaned", request } as const
-      }
-      return { outcome: "resolved" } as const
+      return existing && (yield* Deferred.succeed(existing, input.answers))
+        ? ({ outcome: "resolved" } as const)
+        : ({ outcome: "orphaned", request } as const)
     })
 
     // Partial answers, so a person can finish a multi-step question from any client, or after a reload.
@@ -246,9 +229,10 @@ const layer = Layer.effect(
       })
       const pending = (yield* InstanceState.get(state)).pending
       const existing = pending.get(row.id)
-      if (!existing) return
       pending.delete(row.id)
-      yield* Deferred.fail(existing.deferred, new RejectedError())
+      return existing && (yield* Deferred.fail(existing, new RejectedError()))
+        ? ({ outcome: "resolved" } as const)
+        : ({ outcome: "orphaned", request: rowToRequest(row) } as const)
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
@@ -257,7 +241,7 @@ const layer = Layer.effect(
         yield* Effect.logWarning("reject for unknown request", { requestID })
         return yield* new NotFoundError({ requestID })
       }
-      yield* rejectClaimed(row)
+      return yield* rejectClaimed(row)
     })
 
     const rejectAllForSession = Effect.fn("Question.rejectAllForSession")(function* (sessionID: SessionID) {
@@ -267,7 +251,7 @@ const layer = Layer.effect(
         .returning()
         .all()
         .pipe(Effect.orDie)
-      yield* Effect.forEach(rows, rejectClaimed, { discard: true })
+      return yield* Effect.forEach(rows, rejectClaimed)
     })
 
     const list = Effect.fn("Question.list")(function* () {

@@ -42,7 +42,8 @@ export function defs(clientName: string, client: Client, timeout?: number) {
   )
 }
 
-export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+// `client` is resolved per call so a server reconnect between build and call uses the live client.
+export function convertTool(mcpTool: MCPToolDef, client: () => Client, timeout?: number): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -54,7 +55,7 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(inputSchema),
     execute: async (args: unknown, options) => {
-      const result = await client.callTool(
+      const result = await client().callTool(
         {
           name: mcpTool.name,
           arguments: (args || {}) as Record<string, unknown>,

@@ -327,6 +327,23 @@ it.instance("disconnect removes protocol data and reconnect establishes a new se
   }),
 )
 
+it.instance("a tools() entry taken before a reconnect calls through the new client", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    const mcp = yield* MCP.Service
+    yield* mcp.add("swap-server", remote(server.url))
+    // A tool call holds this entry while it waits for approval; a reconnect closes the old client meanwhile.
+    const entry = (yield* mcp.tools())["swap-server_test_tool"]!
+
+    yield* Effect.promise(server.restart)
+    yield* mcp.connect("swap-server")
+
+    const listed = yield* Effect.promise(() => entry.client.listTools())
+    expect(listed.tools.map((tool) => tool.name)).toEqual(["test_tool"])
+    expect(entry.client).toBe((yield* mcp.clients())["swap-server"]!)
+  }),
+)
+
 it.instance("add() closes the old protocol session when replacing a server", () =>
   Effect.gen(function* () {
     const first = yield* lifecycleServer()

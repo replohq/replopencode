@@ -34,6 +34,7 @@ import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { SessionCompaction } from "../../src/session/compaction"
+import { SessionFallback } from "../../src/session/fallback"
 import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
@@ -681,6 +682,131 @@ it.instance("loop surfaces content-filter finishes as session errors", () =>
       expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial response" })]),
     )
   }),
+)
+
+// A second provider on the same test server, plus a fallback config that sends refusals to it.
+function refusalFallbackCfg(url: string) {
+  const base = providerCfg(url)
+  process.env[SessionFallback.ENV_VAR] = JSON.stringify({
+    fallbackModelsByModel: { "test/test-model": "fallback/fallback-model" },
+    fallbackOnErrors: [503],
+    maxFallbackAttempts: 1,
+    maxUpstreamRetryAttempts: 0,
+    cooldownSeconds: 60,
+    fallbackOnRefusal: true,
+  } satisfies SessionFallback.Config)
+  return {
+    ...base,
+    provider: {
+      ...base.provider,
+      fallback: {
+        ...base.provider.test,
+        name: "Fallback",
+        id: "fallback",
+        models: {
+          "fallback-model": { ...base.provider.test.models["test-model"], id: "fallback-model", name: "Fallback Model" },
+        },
+      },
+    },
+  }
+}
+
+const clearFallback = Effect.sync(() => {
+  delete process.env[SessionFallback.ENV_VAR]
+  SessionFallback.reset()
+})
+
+it.instance("loop answers a refused turn on the fallback model without reporting an error", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(refusalFallbackCfg)
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const errors: unknown[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type) return Effect.void
+      const data = event.data as typeof Session.Event.Error.data.Type
+      if (data.sessionID === chat.id) errors.push(data.error)
+      return Effect.void
+    })
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "hello" }] })
+    yield* llm.push(reply().text("partial").contentFilter())
+    yield* llm.text("answered")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    yield* off
+
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(errors).toEqual([])
+    expect(result.info).toMatchObject({ role: "assistant", providerID: "fallback", modelID: "fallback-model" })
+    if (result.info.role === "assistant") {
+      expect(result.info.finish).toBe("stop")
+      expect(result.info.error).toBeUndefined()
+    }
+    expect(result.parts.filter((part) => part.type === "text").map((part) => part.type === "text" && part.text)).toEqual(
+      ["answered"],
+    )
+  }).pipe(Effect.ensuring(clearFallback)),
+)
+
+it.instance("loop compacts when the fallback model overflows after a refusal", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(refusalFallbackCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "hello" }] })
+    yield* llm.push(reply().contentFilter())
+    yield* llm.error(413, { error: { message: "prompt is too long" } })
+    yield* llm.text("## Summary")
+    yield* llm.text("answered")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    // The refused attempt's finish must not be read as the overflowing attempt's.
+    expect(yield* llm.hits).toHaveLength(4)
+    expect(messages.filter((message) => message.parts.some((part) => part.type === "compaction"))).toHaveLength(1)
+    if (result.info.role === "assistant") expect(result.info.error).toBeUndefined()
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "answered" })]))
+  }).pipe(Effect.ensuring(clearFallback)),
+)
+
+it.instance("loop reports one refusal when the fallback model is refused too", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(refusalFallbackCfg)
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const errors: unknown[] = []
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Error.type) return Effect.void
+      const data = event.data as typeof Session.Event.Error.data.Type
+      if (data.sessionID === chat.id) errors.push(data.error)
+      return Effect.void
+    })
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text: "hello" }] })
+    yield* llm.push(reply().contentFilter(), reply().contentFilter())
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    yield* off
+
+    const refusal = {
+      name: "ContentFilterError",
+      data: { message: "The response was blocked by the provider's content filter" },
+    } satisfies NonNullable<SessionV1.Assistant["error"]>
+    expect(yield* llm.hits).toHaveLength(2)
+    expect(errors).toEqual([refusal])
+    if (result.info.role === "assistant") {
+      expect(result.info.finish).toBe("content-filter")
+      expect(result.info.error).toEqual(refusal)
+    }
+  }).pipe(Effect.ensuring(clearFallback)),
 )
 
 it.instance("loop stops provider overflow instead of auto-compacting when disabled", () =>

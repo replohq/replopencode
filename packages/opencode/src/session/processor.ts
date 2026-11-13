@@ -524,15 +524,6 @@ const layer = Layer.effect(
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
-            // A refusal ends the stream cleanly, so the retry policy never sees it.
-            // Failing here hands it to the fallback like a provider error; the row
-            // above already carries what the refused request cost.
-            if (value.reason === "content-filter" && SessionFallback.config()?.fallbackOnRefusal)
-              return yield* Effect.fail(
-                new SessionV1.ContentFilterError({
-                  message: "The response was blocked by the provider's content filter",
-                }).toObject(),
-              )
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
@@ -737,6 +728,9 @@ const layer = Layer.effect(
             if (Option.isNone(resolved)) return undefined
             ctx.model = resolved.value
             ctx.fallbacks += 1
+            // A refused attempt finished its step. Left on the row, that finish would
+            // be read as this attempt's if it fails before finishing one of its own.
+            ctx.assistantMessage.finish = undefined
             // Partial output the failed attempts wrote belongs to the previous model;
             // left on this message it would be replayed as the fallback's own.
             yield* Effect.forEach(
@@ -788,6 +782,19 @@ const layer = Layer.effect(
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
+            // A refusal ends the stream cleanly, so the retry policy never sees it.
+            // Failing here offers it to the fallback once the step's bookkeeping is
+            // done. Compaction keeps its own handling of a refused summary.
+            if (
+              ctx.assistantMessage.finish === "content-filter" &&
+              !ctx.assistantMessage.summary &&
+              SessionFallback.config()?.fallbackOnRefusal
+            )
+              return yield* Effect.fail(
+                new SessionV1.ContentFilterError({
+                  message: "The response was blocked by the provider's content filter",
+                }).toObject(),
+              )
           }).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
@@ -818,7 +825,9 @@ const layer = Layer.effect(
                 },
               }),
             ),
-            Effect.catch(halt),
+            // A refusal no route answered is not a processor error: the loop reports
+            // it from the row's finish, as it does when the fallback is off.
+            Effect.catch((e) => (SessionV1.ContentFilterError.isInstance(e) ? Effect.void : halt(e))),
             Effect.ensuring(cleanup()),
           )
 
